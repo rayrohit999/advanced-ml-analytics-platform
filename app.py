@@ -1,0 +1,1891 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import StandardScaler, LabelEncoder, RobustScaler
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, roc_curve, auc, precision_recall_curve
+from sklearn.decomposition import PCA
+from sklearn.impute import KNNImputer
+import matplotlib.pyplot as plt
+import seaborn as sns
+import time
+import os
+import requests
+from io import StringIO
+from scipy import stats
+import warnings
+warnings.filterwarnings('ignore')
+
+# Function to safely load example datasets with fallback to local cache
+def load_example_dataset(dataset_name, dataset_urls):
+    """
+    Load an example dataset with error handling and local caching.
+    
+    Args:
+        dataset_name: Name of the dataset to load
+        dataset_urls: Dictionary mapping dataset names to URLs
+        
+    Returns:
+        pandas DataFrame or None if loading failed
+    """
+    # Create a data directory if it doesn't exist
+    data_dir = "example_datasets"
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir)
+    
+    # Define local file path
+    file_name = dataset_name.lower().replace(" ", "_") + ".csv"
+    local_path = os.path.join(data_dir, file_name)
+    
+    # Try to load from URL first
+    try:
+        with st.spinner(f"Downloading {dataset_name} dataset..."):
+            # Use requests with timeout instead of pandas direct URL access
+            response = requests.get(dataset_urls[dataset_name], timeout=10)
+            response.raise_for_status()  # Raise error for bad responses
+            
+            # Parse CSV from response content
+            data = pd.read_csv(StringIO(response.text))
+            
+            # Cache the dataset locally for future use
+            data.to_csv(local_path, index=False)
+            st.success(f"{dataset_name} dataset loaded successfully!")
+            
+            return data
+            
+    except Exception as e:
+        st.warning(f"Could not download {dataset_name} dataset: {str(e)}")
+        
+        # Try to load from local cache if available
+        if os.path.exists(local_path):
+            st.info(f"Loading {dataset_name} dataset from local cache...")
+            try:
+                return pd.read_csv(local_path)
+            except Exception as e2:
+                st.error(f"Error loading from local cache: {str(e2)}")
+        
+        # If everything fails
+        return None
+
+# Set page configuration
+st.set_page_config(
+    page_title="Advanced ML Analytics Platform",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# App Title with styling
+st.markdown("""
+<div style='background-color:#0066cc;padding:10px;border-radius:10px'>
+<h1 style='color:white;text-align:center;'>Advanced ML Analytics Platform</h1>
+</div>
+""", unsafe_allow_html=True)
+
+# Add description that clearly articulates the problem statement
+st.markdown("""
+### 📝 Problem Statement
+
+This application addresses the challenge of efficiently analyzing datasets and building predictive models without extensive coding. 
+Data science tasks typically require significant manual coding for exploration, preprocessing, and modeling, which can be time-consuming 
+and error-prone, especially for non-technical stakeholders.
+
+**Significance**:
+1. Democratizes machine learning by allowing non-technical users to perform advanced analytics
+2. Accelerates data-driven decision making through automated insights generation
+3. Provides comprehensive data understanding through interactive visualizations
+4. Enables comparative model evaluation for optimal predictive performance
+
+The platform implements best practices in machine learning workflow from data exploration to model evaluation, making advanced analytics accessible to all.
+""")
+
+
+# Enhanced sidebar with instructions and additional options
+st.sidebar.markdown("""
+<div style='background-color:#0066cc;padding:10px;border-radius:10px'>
+<h2 style='text-align:center;color:white;'>Navigation Panel</h2>
+</div>
+""", unsafe_allow_html=True)
+
+# Add a timer to track how long the session has been active
+if 'start_time' not in st.session_state:
+    st.session_state.start_time = time.time()
+    st.session_state.data_loaded = False
+
+elapsed_time = int(time.time() - st.session_state.start_time)
+st.sidebar.markdown(f"**Session Time:** {elapsed_time//60} mins {elapsed_time%60} secs")
+
+# Sidebar for instructions with improved formatting
+st.sidebar.markdown("### 📋 Instructions")
+st.sidebar.markdown("""
+1. **Upload Data**: Select a CSV dataset for analysis
+2. **Explore Data**: Review statistics and visualizations
+3. **Preprocess**: Clean and prepare your data
+4. **Model Selection**: Choose and tune ML algorithms
+5. **Evaluate Results**: Interpret performance metrics
+""")
+
+# Add example datasets for users to try
+st.sidebar.markdown("### 🔍 Example Datasets")
+example_datasets = {
+    "Iris Classification": "https://raw.githubusercontent.com/mwaskom/seaborn-data/master/iris.csv",
+    "Titanic Survival": "https://raw.githubusercontent.com/datasciencedojo/datasets/master/titanic.csv",
+    # Use GitHub raw content instead of direct UCI link for more reliability
+    "Wine Quality": "https://raw.githubusercontent.com/SiddharthChabukswar/UCI-ML-Repository-Datasets/master/Wine%20Quality/winequality-red.csv"
+}
+
+selected_example = st.sidebar.selectbox("Try an example dataset:", [""] + list(example_datasets.keys()))
+
+# Add option to use built-in scikit-learn datasets as a fallback
+st.sidebar.markdown("### 📊 Offline Datasets")
+use_builtin = st.sidebar.checkbox("Use built-in scikit-learn datasets (works offline)")
+
+if use_builtin:
+    builtin_dataset = st.sidebar.radio(
+        "Select built-in dataset:",
+        ["Iris", "Wine", "Breast Cancer", "Diabetes"]
+    )
+
+# Add reference and resources section
+st.sidebar.markdown("### 📚 Resources")
+st.sidebar.markdown("""
+- [Scikit-learn Documentation](https://scikit-learn.org/stable/)
+- [Data Visualization Guide](https://matplotlib.org/)
+- [Feature Engineering Tips](https://www.kaggle.com/learn/feature-engineering)
+""")
+
+# Step 1: Upload Dataset with enhanced options
+st.markdown("## 📤 Data Acquisition")
+uploaded_file = st.file_uploader("Upload your CSV dataset", type="csv")
+
+# Load example dataset if selected
+if selected_example and not use_builtin:
+    # Use our custom function to load the dataset with error handling and caching
+    df = load_example_dataset(selected_example, example_datasets)
+    
+    if df is not None:
+        st.session_state.data_loaded = True
+    else:
+        st.error(f"Could not load {selected_example} dataset")
+        st.markdown("""
+        ### Troubleshooting Tips:
+        1. Check your internet connection
+        2. Try uploading the dataset manually instead
+        3. Try another example dataset
+        4. Try the built-in scikit-learn datasets (offline option)
+        
+        If problems persist, you can download the datasets directly from these sources:
+        - [Iris Dataset](https://raw.githubusercontent.com/mwaskom/seaborn-data/master/iris.csv)
+        - [Titanic Dataset](https://raw.githubusercontent.com/datasciencedojo/datasets/master/titanic.csv)
+        - [Wine Quality Dataset](https://raw.githubusercontent.com/SiddharthChabukswar/UCI-ML-Repository-Datasets/master/Wine%20Quality/winequality-red.csv)
+        """)
+        st.session_state.data_loaded = False
+
+# Use scikit-learn built-in datasets if selected
+elif use_builtin:
+    try:
+        if builtin_dataset == "Iris":
+            from sklearn.datasets import load_iris
+            data = load_iris()
+            df = pd.DataFrame(data.data, columns=data.feature_names)
+            df['target'] = data.target
+            st.success("Iris dataset loaded successfully!")
+            st.info("This dataset contains measurements of iris flowers with 3 different species.")
+            
+        elif builtin_dataset == "Wine":
+            from sklearn.datasets import load_wine
+            data = load_wine()
+            df = pd.DataFrame(data.data, columns=data.feature_names)
+            df['target'] = data.target
+            st.success("Wine dataset loaded successfully!")
+            st.info("This dataset contains chemical analyses of wines from 3 different cultivars.")
+            
+        elif builtin_dataset == "Breast Cancer":
+            from sklearn.datasets import load_breast_cancer
+            data = load_breast_cancer()
+            df = pd.DataFrame(data.data, columns=data.feature_names)
+            df['target'] = data.target
+            st.success("Breast Cancer dataset loaded successfully!")
+            st.info("This dataset contains features of breast mass and classification as malignant/benign.")
+            
+        elif builtin_dataset == "Diabetes":
+            from sklearn.datasets import load_diabetes
+            data = load_diabetes()
+            df = pd.DataFrame(data.data, columns=data.feature_names)
+            df['target'] = data.target
+            st.success("Diabetes dataset loaded successfully!")
+            st.info("This dataset contains patient data and a quantitative measure of disease progression.")
+        
+        st.session_state.data_loaded = True
+        
+    except Exception as e:
+        st.error(f"Error loading built-in dataset: {str(e)}")
+        st.session_state.data_loaded = False
+        
+elif uploaded_file is not None:
+    try:
+        df = pd.read_csv(uploaded_file)
+        st.session_state.data_loaded = True
+        st.success("Dataset uploaded successfully!")
+    except Exception as e:
+        st.error(f"Error reading uploaded file: {str(e)}")
+        st.markdown("Please ensure your file is a valid CSV format.")
+        st.session_state.data_loaded = False
+else:
+    st.info("Please upload a CSV file or select an example dataset to begin analysis.")
+    st.session_state.data_loaded = False
+
+if st.session_state.data_loaded:
+    # Dataset overview in expandable section
+    with st.expander("📊 Dataset Overview", expanded=True):
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.dataframe(df.head(10), use_container_width=True)  # Show first 10 rows with full width
+        with col2:
+            st.markdown("### Dataset Profile")
+            st.markdown(f"**Rows:** {df.shape[0]}")
+            st.markdown(f"**Columns:** {df.shape[1]}")
+            st.markdown(f"**Numeric Features:** {len(df.select_dtypes(include=np.number).columns)}")
+            st.markdown(f"**Categorical Features:** {len(df.select_dtypes(include='object').columns)}")
+            st.markdown(f"**Missing Values:** {df.isnull().sum().sum()} ({(df.isnull().sum().sum()/(df.shape[0]*df.shape[1])*100):.2f}%)")
+    
+    # Step 2: Comprehensive Exploratory Data Analysis (EDA)
+    st.markdown("## 🔍 Exploratory Data Analysis")
+    
+    # Interactive tabs for different EDA aspects
+    eda_tabs = st.tabs(["Summary Statistics", "Data Distribution", "Correlation Analysis", "Missing Values", "Outlier Detection"])
+    
+    # Tab 1: Summary Statistics
+    with eda_tabs[0]:
+        st.markdown("### Comprehensive Data Summary")
+        
+        # Summary metrics for both numerical and categorical features
+        num_cols = df.select_dtypes(include=np.number).columns
+        cat_cols = df.select_dtypes(include='object').columns
+        
+        # Better formatting for summary statistics
+        if len(num_cols) > 0:
+            st.markdown("#### Numerical Features Statistics")
+            st.dataframe(df[num_cols].describe().T.style.highlight_max(axis=1, color='lightgreen').highlight_min(axis=1, color='#ffcccc'))
+            
+            # Advanced statistics
+            skew_data = df[num_cols].skew().reset_index()
+            skew_data.columns = ['Feature', 'Skewness']
+            kurt_data = df[num_cols].kurtosis().reset_index()
+            kurt_data.columns = ['Feature', 'Kurtosis']
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Skewness** (measure of asymmetry)")
+                st.dataframe(skew_data)
+            with col2:
+                st.markdown("**Kurtosis** (measure of tailedness)")
+                st.dataframe(kurt_data)
+            
+            st.markdown("""
+            **Interpretation**:
+            - **Skewness**: Values > 0.5 or < -0.5 indicate moderate skewness; > 1 or < -1 indicate high skewness
+            - **Kurtosis**: Values > 3 indicate heavy tails (more outliers); < 3 indicate light tails
+            
+            **Actionable Insight**: Features with high skewness may need transformation (e.g., log, sqrt) before modeling.
+            """)
+            
+        if len(cat_cols) > 0:
+            st.markdown("#### Categorical Features Overview")
+            cat_summary = pd.DataFrame({
+                'Feature': cat_cols,
+                'Unique Values': [df[col].nunique() for col in cat_cols],
+                'Most Common': [df[col].value_counts().index[0] if not df[col].value_counts().empty else 'N/A' for col in cat_cols],
+                'Frequency (%)': [df[col].value_counts(normalize=True).max() * 100 if not df[col].value_counts().empty else 0 for col in cat_cols]
+            })
+            st.dataframe(cat_summary)
+    
+    # Tab 2: Data Distribution
+    with eda_tabs[1]:
+        st.markdown("### Data Distribution Analysis")
+        
+        # Enhanced Visualizations for Numerical Columns
+        if len(num_cols) > 0:
+            st.markdown("#### 📈 Numerical Features Distribution")
+            
+            # Let user select columns to visualize
+            selected_num_cols = st.multiselect("Select numerical features to visualize:", options=list(num_cols), default=list(num_cols)[:min(3, len(num_cols))])
+            
+            if selected_num_cols:
+                # Distribution plots with both histogram and KDE
+                for i in range(0, len(selected_num_cols), 2):
+                    cols_subset = selected_num_cols[i:i+2]
+                    if cols_subset:
+                        cols = st.columns(len(cols_subset))
+                        for j, col_name in enumerate(cols_subset):
+                            with cols[j]:
+                                fig, ax = plt.subplots(figsize=(10, 6))
+                                sns.histplot(df[col_name], kde=True, ax=ax)
+                                ax.set_title(f"Distribution of {col_name}")
+                                st.pyplot(fig)
+                                
+                                # Add quantitative analysis
+                                st.markdown(f"""
+                                **Distribution metrics for {col_name}**:
+                                - **Mean**: {df[col_name].mean():.2f}
+                                - **Median**: {df[col_name].median():.2f}
+                                - **Std Dev**: {df[col_name].std():.2f}
+                                - **IQR**: {df[col_name].quantile(0.75) - df[col_name].quantile(0.25):.2f}
+                                """)
+            
+            # Advanced option: Box plots
+            st.markdown("#### 📊 Box Plots (Identify Outliers)")
+            selected_box_cols = st.multiselect("Select features for box plots:", options=list(num_cols), default=list(num_cols)[:min(3, len(num_cols))])
+            
+            if selected_box_cols:
+                fig, ax = plt.subplots(figsize=(12, 6))
+                sns.boxplot(data=df[selected_box_cols], ax=ax)
+                plt.xticks(rotation=45)
+                st.pyplot(fig)
+                st.markdown("""
+                **Interpretation**: 
+                - Box shows IQR (middle 50% of data)
+                - Line inside box is median
+                - Whiskers extend to 1.5 * IQR
+                - Points beyond whiskers are potential outliers
+                
+                **Actionable Insight**: Consider treating outliers before modeling through capping, removing, or using robust models.
+                """)
+        
+        # Enhanced Visualizations for Categorical Columns
+        if len(cat_cols) > 0:
+            st.markdown("#### 📊 Categorical Features Distribution")
+            
+            # Let user select columns to visualize
+            selected_cat_cols = st.multiselect("Select categorical features to visualize:", options=list(cat_cols), default=list(cat_cols)[:min(2, len(cat_cols))])
+            
+            if selected_cat_cols:
+                for col_name in selected_cat_cols:
+                    # Calculate value counts and percentages
+                    value_counts = df[col_name].value_counts()
+                    total = len(df[col_name])
+                    
+                    # Display counts and percentages
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        fig, ax = plt.subplots(figsize=(10, 6))
+                        sns.countplot(x=df[col_name], order=value_counts.index, ax=ax)
+                        ax.set_title(f"Distribution of {col_name}")
+                        plt.xticks(rotation=45, ha='right')
+                        st.pyplot(fig)
+                    
+                    with col2:
+                        # Show percentages in a table
+                        percentages = (value_counts / total * 100).reset_index()
+                        percentages.columns = [col_name, 'Percentage (%)']
+                        percentages['Percentage (%)'] = percentages['Percentage (%)'].round(2)
+                        st.dataframe(percentages)
+                        
+                        # Highlight imbalance if present
+                        max_pct = percentages['Percentage (%)'].max()
+                        min_pct = percentages['Percentage (%)'].min()
+                        if max_pct > 75 or min_pct < 5:
+                            st.warning(f"⚠️ Imbalance detected in {col_name}. This may affect model performance.")
+                            st.markdown("""
+                            **Recommendation**: Consider resampling techniques:
+                            - Oversampling minority class
+                            - Undersampling majority class
+                            - SMOTE for synthetic data generation
+                            """)
+    
+    # Tab 3: Correlation Analysis
+    with eda_tabs[2]:
+        st.markdown("### 🔗 Feature Relationships & Correlation Analysis")
+        
+        # Correlation Heatmap (for numerical features)
+        if len(num_cols) > 1:
+            st.markdown("#### Correlation Heatmap")
+            
+            # Let user choose correlation method
+            corr_method = st.radio("Select correlation method:", ["Pearson (linear)", "Spearman (monotonic)", "Kendall (rank)"], horizontal=True)
+            method_map = {"Pearson (linear)": "pearson", "Spearman (monotonic)": "spearman", "Kendall (rank)": "kendall"}
+            
+            # Generate correlation matrix
+            corr = df[num_cols].corr(method=method_map[corr_method])
+            
+            # Create mask for upper triangle to improve readability
+            mask = np.triu(np.ones_like(corr, dtype=bool))
+            
+            # Plot correlation heatmap
+            fig, ax = plt.subplots(figsize=(12, 10))
+            heatmap = sns.heatmap(corr, annot=True, cmap='coolwarm', fmt=".2f", mask=mask, ax=ax, 
+                                  annot_kws={"size": 8}, linewidths=0.5)
+            ax.set_title(f"{corr_method} Correlation Matrix", fontsize=14)
+            st.pyplot(fig)
+            
+            # Identify and display strong correlations
+            strong_corr = pd.DataFrame(columns=['Feature 1', 'Feature 2', 'Correlation'])
+            for i in range(len(corr.columns)):
+                for j in range(i):
+                    if abs(corr.iloc[i, j]) > 0.5:  # Threshold for strong correlation
+                        strong_corr = pd.concat([strong_corr, pd.DataFrame({
+                            'Feature 1': [corr.columns[i]], 
+                            'Feature 2': [corr.columns[j]],
+                            'Correlation': [corr.iloc[i, j]]
+                        })])
+            
+            if not strong_corr.empty:
+                st.markdown("#### Strong Feature Correlations (|r| > 0.5)")
+                st.dataframe(strong_corr.sort_values(by='Correlation', key=abs, ascending=False))
+                
+                st.markdown("""
+                **Interpretation**:
+                - **Strong positive correlation (close to 1)**: Features increase together
+                - **Strong negative correlation (close to -1)**: As one feature increases, the other decreases
+                
+                **Actionable Insights**:
+                - Consider removing highly correlated features to reduce multicollinearity
+                - For feature pairs with |r| > 0.8, consider keeping only one feature
+                - Look for unexpected correlations that might reveal hidden patterns
+                """)
+            
+            # Scatter plot for selected features
+            st.markdown("#### Feature Relationship Scatter Plot")
+            col1, col2 = st.columns(2)
+            with col1:
+                x_feature = st.selectbox("Select X-axis feature:", options=num_cols)
+            with col2:
+                y_feature = st.selectbox("Select Y-axis feature:", options=[col for col in num_cols if col != x_feature], index=0)
+            
+            # Add option for hue if categorical columns exist
+            hue_feature = None
+            if len(cat_cols) > 0:
+                hue_feature = st.selectbox("Color points by (optional):", options=["None"] + list(cat_cols))
+                if hue_feature == "None":
+                    hue_feature = None
+            
+            # Create scatter plot
+            fig, ax = plt.subplots(figsize=(10, 6))
+            sns.scatterplot(x=df[x_feature], y=df[y_feature], hue=df[hue_feature] if hue_feature else None, ax=ax)
+            ax.set_title(f"Relationship between {x_feature} and {y_feature}")
+            st.pyplot(fig)
+            
+            # Display correlation and regression line
+            if hue_feature is None:
+                corr_val = df[[x_feature, y_feature]].corr().iloc[0, 1]
+                st.markdown(f"**Correlation between {x_feature} and {y_feature}**: {corr_val:.4f}")
+                
+                # Add regression plot
+                fig, ax = plt.subplots(figsize=(10, 6))
+                sns.regplot(x=df[x_feature], y=df[y_feature], ax=ax, line_kws={"color": "red"})
+                ax.set_title(f"Regression Plot: {x_feature} vs {y_feature}")
+                st.pyplot(fig)
+    
+    # Tab 4: Missing Values Analysis
+    with eda_tabs[3]:
+        st.markdown("### 🧩 Missing Data Analysis")
+        
+        # Calculate missing values
+        missing_data = df.isnull().sum().reset_index()
+        missing_data.columns = ['Feature', 'Missing Count']
+        missing_data['Missing Percentage'] = (missing_data['Missing Count'] / len(df) * 100).round(2)
+        missing_data = missing_data.sort_values('Missing Percentage', ascending=False)
+        
+        # Display missing values
+        if missing_data['Missing Count'].sum() > 0:
+            st.markdown("#### Missing Values Overview")
+            
+            # Visualize missing data
+            fig, ax = plt.subplots(figsize=(12, 6))
+            sns.barplot(x='Feature', y='Missing Percentage', data=missing_data[missing_data['Missing Count'] > 0], ax=ax)
+            plt.xticks(rotation=45, ha='right')
+            plt.title('Missing Values by Feature')
+            st.pyplot(fig)
+            
+            # Show missing data table
+            st.dataframe(missing_data[missing_data['Missing Count'] > 0])
+            
+            # Missing data patterns visualization (missingno)
+            st.markdown("#### Missing Value Patterns")
+            
+            # Create a heatmap-style visualization of missing patterns
+            if len(df.columns) <= 30:  # Limit to avoid overloading
+                fig, ax = plt.subplots(figsize=(12, 8))
+                ax = sns.heatmap(df.isnull(), cbar=False, cmap='viridis', yticklabels=False)
+                plt.title('Missing Value Patterns (Yellow indicates missing)')
+                plt.tight_layout()
+                st.pyplot(fig)
+            
+            # Recommendations for handling missing values
+            st.markdown("""
+            #### Strategies for Handling Missing Data
+            
+            1. **For numerical features**:
+               - Replace with mean/median (for symmetric/skewed distributions)
+               - Use KNN imputation for better accuracy
+               - Create 'missing' indicator feature if missingness is informative
+            
+            2. **For categorical features**:
+               - Replace with mode (most frequent category)
+               - Create a new 'Unknown' or 'Missing' category
+               - Use model-based imputation
+            
+            3. **Row removal**:
+               - Consider removing rows if missing percentage is low
+               - Not recommended if missing data exceeds 5-10%
+            
+            **Advanced Technique**: Use models to predict missing values based on other features
+            """)
+            
+            # Interactive imputation demo
+            st.markdown("#### Try Different Imputation Methods")
+            feature_to_impute = st.selectbox(
+                "Select a feature to impute:", 
+                options=[col for col in df.columns if df[col].isnull().sum() > 0],
+                index=0 if any(df[col].isnull().sum() > 0 for col in df.columns) else None
+            )
+            
+            if feature_to_impute:
+                method = "mean" if df[feature_to_impute].dtype in ['int64', 'float64'] else "most_frequent"
+                imputation_method = st.radio(
+                    "Select imputation method:",
+                    ["Mean/Mode", "Median", "KNN Imputation"],
+                    horizontal=True
+                )
+                
+                # Create a copy of the dataframe for demonstration
+                df_imputed = df.copy()
+                
+                # Apply selected imputation
+                if imputation_method == "Mean/Mode":
+                    if df[feature_to_impute].dtype in ['int64', 'float64']:
+                        fill_value = df[feature_to_impute].mean()
+                        df_imputed[feature_to_impute].fillna(fill_value, inplace=True)
+                        st.write(f"Filled missing values with mean: {fill_value:.2f}")
+                    else:
+                        fill_value = df[feature_to_impute].mode()[0]
+                        df_imputed[feature_to_impute].fillna(fill_value, inplace=True)
+                        st.write(f"Filled missing values with mode: {fill_value}")
+                        
+                elif imputation_method == "Median":
+                    if df[feature_to_impute].dtype in ['int64', 'float64']:
+                        fill_value = df[feature_to_impute].median()
+                        df_imputed[feature_to_impute].fillna(fill_value, inplace=True)
+                        st.write(f"Filled missing values with median: {fill_value:.2f}")
+                    else:
+                        st.write("Median imputation only applies to numerical features")
+                        
+                elif imputation_method == "KNN Imputation":
+                    st.write("KNN Imputation (using 5 nearest neighbors)")
+                    # This is a simplified demo - in practice, would handle categorical features properly
+                    numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+                    if feature_to_impute in numeric_cols and len(numeric_cols) > 1:
+                        imputer = KNNImputer(n_neighbors=5)
+                        df_imputed[numeric_cols] = imputer.fit_transform(df[numeric_cols])
+                        st.write("KNN imputation completed for numeric features")
+                    else:
+                        st.write("KNN imputation requires multiple numeric features")
+                
+                # Show before/after comparison
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Before Imputation**")
+                    st.write(df[feature_to_impute].describe())
+                with col2:
+                    st.markdown("**After Imputation**")
+                    st.write(df_imputed[feature_to_impute].describe())
+        else:
+            st.success("✅ No missing values found in the dataset!")
+            
+    # Tab 5: Outlier Detection
+    with eda_tabs[4]:
+        st.markdown("### 🔎 Outlier Detection & Analysis")
+        
+        if len(num_cols) > 0:
+            # Let user select columns for outlier detection
+            selected_cols_outliers = st.multiselect(
+                "Select numerical features for outlier analysis:",
+                options=num_cols,
+                default=list(num_cols)[:min(3, len(num_cols))]
+            )
+            
+            if selected_cols_outliers:
+                # Z-score method
+                st.markdown("#### Z-score Method (identifies values > 3 standard deviations from mean)")
+                
+                # Calculate and display outliers using Z-score
+                outliers_z = {}
+                for col in selected_cols_outliers:
+                    z_scores = np.abs(stats.zscore(df[col].dropna()))
+                    outliers_z[col] = np.sum(z_scores > 3)
+                
+                outliers_df_z = pd.DataFrame({
+                    'Feature': list(outliers_z.keys()),
+                    'Outliers Count (Z-score > 3)': list(outliers_z.values()),
+                    'Percentage (%)': [count / len(df) * 100 for count in outliers_z.values()]
+                })
+                
+                # IQR method
+                st.markdown("#### IQR Method (identifies values outside 1.5 * IQR from quartiles)")
+                
+                # Calculate and display outliers using IQR
+                outliers_iqr = {}
+                for col in selected_cols_outliers:
+                    Q1 = df[col].quantile(0.25)
+                    Q3 = df[col].quantile(0.75)
+                    IQR = Q3 - Q1
+                    outliers_iqr[col] = np.sum((df[col] < (Q1 - 1.5 * IQR)) | (df[col] > (Q3 + 1.5 * IQR)))
+                
+                outliers_df_iqr = pd.DataFrame({
+                    'Feature': list(outliers_iqr.keys()),
+                    'Outliers Count (IQR method)': list(outliers_iqr.values()),
+                    'Percentage (%)': [count / len(df) * 100 for count in outliers_iqr.values()]
+                })
+                
+                # Display results side by side
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.dataframe(outliers_df_z)
+                with col2:
+                    st.dataframe(outliers_df_iqr)
+                
+                # Visualize outliers for a selected feature
+                st.markdown("#### Visualize Outliers")
+                selected_feature = st.selectbox("Select a feature to visualize outliers:", options=selected_cols_outliers)
+                
+                if selected_feature:
+                    # Box plot
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    sns.boxplot(x=df[selected_feature], ax=ax)
+                    ax.set_title(f"Box Plot: {selected_feature}")
+                    st.pyplot(fig)
+                    
+                    # Histogram with outlier boundaries
+                    Q1 = df[selected_feature].quantile(0.25)
+                    Q3 = df[selected_feature].quantile(0.75)
+                    IQR = Q3 - Q1
+                    lower_bound = Q1 - 1.5 * IQR
+                    upper_bound = Q3 + 1.5 * IQR
+                    
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    sns.histplot(df[selected_feature], kde=True, ax=ax)
+                    ax.axvline(lower_bound, color='r', linestyle='--', label=f'Lower bound: {lower_bound:.2f}')
+                    ax.axvline(upper_bound, color='r', linestyle='--', label=f'Upper bound: {upper_bound:.2f}')
+                    ax.set_title(f"Distribution with Outlier Boundaries: {selected_feature}")
+                    ax.legend()
+                    st.pyplot(fig)
+                    
+                    # Show actual outlier values
+                    outliers = df[(df[selected_feature] < lower_bound) | (df[selected_feature] > upper_bound)][selected_feature]
+                    if not outliers.empty:
+                        st.markdown(f"**Sample outlier values for {selected_feature}:**")
+                        st.write(outliers.head(10))
+                
+                # Recommendations for handling outliers
+                st.markdown("""
+                #### Strategies for Handling Outliers
+                
+                1. **Investigate first**: Understand if outliers represent errors or valid extreme cases
+                
+                2. **Treatment options**:
+                   - **Trimming**: Remove outliers (if they're errors or very few)
+                   - **Capping**: Set upper/lower limits (Winsorization)
+                   - **Transformation**: Apply log, square root, or Box-Cox to reduce influence
+                   - **Binning**: Convert to categorical ranges
+                
+                3. **Modeling approaches**:
+                   - Use robust algorithms less sensitive to outliers (Random Forest, Gradient Boosting)
+                   - Use robust scaling methods (RobustScaler)
+                
+                **Actionable Insight**: For machine learning, consider how outliers affect your specific model. Linear models are more sensitive to outliers than tree-based models.
+                """)
+                
+                # Demo outlier treatment
+                st.markdown("#### Try Different Outlier Treatments")
+                treatment_method = st.radio(
+                    "Select treatment method:",
+                    ["Original Data", "Trimming", "Capping (Winsorization)", "Log Transformation"],
+                    horizontal=True
+                )
+                
+                # Apply selected treatment
+                df_treated = df.copy()
+                
+                if treatment_method == "Trimming":
+                    for col in selected_cols_outliers:
+                        Q1 = df[col].quantile(0.25)
+                        Q3 = df[col].quantile(0.75)
+                        IQR = Q3 - Q1
+                        lower_bound = Q1 - 1.5 * IQR
+                        upper_bound = Q3 + 1.5 * IQR
+                        df_treated = df_treated[(df_treated[col] >= lower_bound) & (df_treated[col] <= upper_bound)]
+                    st.write(f"Removed {len(df) - len(df_treated)} rows with outliers")
+                    
+                elif treatment_method == "Capping (Winsorization)":
+                    for col in selected_cols_outliers:
+                        Q1 = df[col].quantile(0.25)
+                        Q3 = df[col].quantile(0.75)
+                        IQR = Q3 - Q1
+                        lower_bound = Q1 - 1.5 * IQR
+                        upper_bound = Q3 + 1.5 * IQR
+                        df_treated[col] = df_treated[col].clip(lower=lower_bound, upper=upper_bound)
+                    st.write("Capped outliers to IQR boundaries")
+                    
+                elif treatment_method == "Log Transformation":
+                    for col in selected_cols_outliers:
+                        # Add small constant to handle zeros
+                        if (df_treated[col] <= 0).any():
+                            min_val = df_treated[col].min()
+                            shift = abs(min_val) + 1 if min_val <= 0 else 0
+                            df_treated[col] = np.log(df_treated[col] + shift)
+                            st.write(f"Applied log(x + {shift}) transformation to {col}")
+                        else:
+                            df_treated[col] = np.log(df_treated[col])
+                            st.write(f"Applied log transformation to {col}")
+                
+                # Compare distributions before and after treatment
+                if treatment_method != "Original Data":
+                    selected_viz_feature = st.selectbox(
+                        "Select a feature to compare before and after treatment:",
+                        options=selected_cols_outliers
+                    )
+                    
+                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+                    
+                    # Before treatment
+                    sns.boxplot(x=df[selected_viz_feature], ax=ax1)
+                    ax1.set_title(f"Before: {selected_viz_feature}")
+                    
+                    # After treatment
+                    sns.boxplot(x=df_treated[selected_viz_feature], ax=ax2)
+                    ax2.set_title(f"After: {selected_viz_feature}")
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    
+                    # Compare statistics
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("**Before Treatment**")
+                        st.write(df[selected_viz_feature].describe())
+                    with col2:
+                        st.markdown("**After Treatment**")
+                        st.write(df_treated[selected_viz_feature].describe())
+
+    # Step 3: Advanced Machine Learning Pipeline
+    st.markdown("## 🤖 Machine Learning Pipeline")
+    
+    if st.session_state.data_loaded:
+        # Create tabs for preprocessing, model selection, and evaluation
+        ml_tabs = st.tabs(["Data Preparation", "Feature Engineering", "Model Selection & Training", "Evaluation & Insights"])
+        
+        # Tab 1: Data Preparation
+        with ml_tabs[0]:
+            st.markdown("### 🔧 Data Preparation")
+            
+            # Select Target Column
+            st.markdown("#### Target Selection")
+            target_col = st.selectbox("Select the target column for prediction:", options=[""] + list(df.columns))
+            
+            if not target_col:
+                st.info("⬆️ Please select a target column to continue")
+            else:
+                # Store target in session state
+                if 'target_col' not in st.session_state:
+                    st.session_state.target_col = target_col
+                
+                # Analyze target variable
+                if df[target_col].dtype == 'object' or df[target_col].nunique() < 10:
+                    is_classification = True
+                    task_type = "Classification"
+                    
+                    # Visualize target distribution
+                    st.markdown(f"#### Target Distribution: {target_col}")
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    value_counts = df[target_col].value_counts().sort_index()
+                    if len(value_counts) <= 30:  # Don't plot if too many categories
+                        sns.countplot(x=df[target_col], ax=ax, order=value_counts.index)
+                        plt.xticks(rotation=45, ha='right')
+                        st.pyplot(fig)
+                    
+                    # Check for class imbalance
+                    class_counts = df[target_col].value_counts(normalize=True) * 100
+                    st.dataframe(pd.DataFrame({'Class': class_counts.index, 'Percentage (%)': class_counts.values.round(2)}))
+                    
+                    if class_counts.max() > 75 or class_counts.min() < 10:
+                        st.warning("⚠️ **Class Imbalance Detected**: This may affect model performance")
+                        st.markdown("""
+                        **Mitigation Strategies**:
+                        - Oversampling minority classes
+                        - Undersampling majority class
+                        - Using class weights
+                        - SMOTE (Synthetic Minority Over-sampling Technique)
+                        """)
+                        
+                        # Allow user to select balancing strategy
+                        balance_strategy = st.radio(
+                            "Select a strategy for handling class imbalance:",
+                            ["No adjustment", "Use class weights", "Oversampling (not implemented in demo)"],
+                            horizontal=True
+                        )
+                        st.session_state.balance_strategy = balance_strategy
+                else:
+                    is_classification = False
+                    task_type = "Regression"
+                    
+                    # Visualize target distribution for regression
+                    st.markdown(f"#### Target Distribution: {target_col}")
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    sns.histplot(df[target_col], kde=True, ax=ax)
+                    st.pyplot(fig)
+                    
+                    # Show statistics
+                    st.dataframe(df[target_col].describe().to_frame().T)
+                    
+                    # Check for skewness
+                    skewness = df[target_col].skew()
+                    if abs(skewness) > 1:
+                        st.warning(f"⚠️ Target is skewed (skewness={skewness:.2f}). Consider transformation.")
+                
+                # Store task type in session state
+                st.session_state.is_classification = is_classification
+                st.session_state.task_type = task_type
+                st.info(f"📊 Task identified: **{task_type}**")
+                
+                # Data Splitting Options
+                st.markdown("#### Train-Test Split Configuration")
+                col1, col2 = st.columns(2)
+                with col1:
+                    test_size = st.slider("Test set size:", 0.1, 0.5, 0.2, 0.05)
+                with col2:
+                    random_seed = st.number_input("Random seed for reproducibility:", 0, 999, 42)
+                
+                # Option for stratified split in classification
+                stratify = False
+                if is_classification:
+                    stratify = st.checkbox("Use stratified split (maintains class distribution)", True)
+                
+                st.session_state.split_params = {
+                    'test_size': test_size,
+                    'random_seed': random_seed,
+                    'stratify': stratify
+                }
+                
+                # Preview the split 
+                if 'X' not in st.session_state:
+                    # Prepare Data
+                    X = df.drop(target_col, axis=1)
+                    y = df[target_col]
+                    st.session_state.X_original = X
+                    st.session_state.y_original = y
+                    
+                    # Store column information
+                    st.session_state.cat_cols = X.select_dtypes(include='object').columns.tolist()
+                    st.session_state.num_cols = X.select_dtypes(include=np.number).columns.tolist()
+                    
+                    st.markdown(f"**Features**: {X.shape[1]} total ({len(st.session_state.num_cols)} numerical, {len(st.session_state.cat_cols)} categorical)")
+                    
+                    if stratify and is_classification:
+                        X_train, X_test, y_train, y_test = train_test_split(
+                            X, y, test_size=test_size, random_state=random_seed, stratify=y
+                        )
+                    else:
+                        X_train, X_test, y_train, y_test = train_test_split(
+                            X, y, test_size=test_size, random_state=random_seed
+                        )
+                    
+                    st.session_state.X_train_raw = X_train
+                    st.session_state.X_test_raw = X_test
+                    st.session_state.y_train = y_train
+                    st.session_state.y_test = y_test
+                    
+                    st.success(f"✅ Data successfully split into training ({X_train.shape[0]} samples) and test ({X_test.shape[0]} samples) sets")
+                
+                # Option to reset data preparation
+                if st.button("Reset Data Preparation"):
+                    for key in ['X_original', 'y_original', 'X_train_raw', 'X_test_raw', 'y_train', 'y_test']:
+                        if key in st.session_state:
+                            del st.session_state[key]
+                    st.experimental_rerun()
+        
+        # Tab 2: Feature Engineering
+        with ml_tabs[1]:
+            st.markdown("### 🛠️ Feature Engineering")
+            
+            if 'X_train_raw' not in st.session_state:
+                st.warning("⚠️ Please complete data preparation first")
+            else:
+                # Access split data
+                X_train = st.session_state.X_train_raw.copy()
+                X_test = st.session_state.X_test_raw.copy()
+                
+                # Preprocessing Options
+                st.markdown("#### Handling Missing Values")
+                missing_strategy = st.radio(
+                    "Strategy for numerical missing values:",
+                    ["Mean imputation", "Median imputation", "KNN imputation"],
+                    horizontal=True
+                )
+                
+                cat_missing_strategy = st.radio(
+                    "Strategy for categorical missing values:",
+                    ["Mode imputation", "Create 'Missing' category"],
+                    horizontal=True
+                )
+                
+                # Handling Categorical Features
+                st.markdown("#### Encoding Categorical Features")
+                encoding_strategy = st.radio(
+                    "Encoding strategy for categorical features:",
+                    ["Label Encoding", "One-Hot Encoding"],
+                    horizontal=True
+                )
+                
+                # Scaling Options
+                st.markdown("#### Feature Scaling")
+                scaling_strategy = st.radio(
+                    "Scaling strategy for numerical features:",
+                    ["StandardScaler (zero mean, unit variance)", 
+                     "MinMaxScaler (0 to 1 range)",
+                     "RobustScaler (robust to outliers)",
+                     "No scaling"],
+                    horizontal=True
+                )
+                
+                # Feature Selection Options
+                st.markdown("#### Feature Selection (Optional)")
+                use_pca = st.checkbox("Apply PCA for dimensionality reduction", False)
+                
+                if use_pca:
+                    if len(st.session_state.num_cols) < 2:
+                        st.warning("PCA requires at least 2 numerical features")
+                        use_pca = False
+                    else:
+                        n_components = st.slider(
+                            "Number of PCA components:", 
+                            min_value=2, 
+                            max_value=min(10, len(st.session_state.num_cols)), 
+                            value=min(3, len(st.session_state.num_cols))
+                        )
+                
+                # Apply preprocessing when user clicks this button
+                if st.button("Apply Feature Engineering"):
+                    with st.spinner("Preprocessing data..."):
+                        # 1. Handle missing values for numerical features
+                        if missing_strategy == "Mean imputation":
+                            for col in st.session_state.num_cols:
+                                if X_train[col].isnull().any():
+                                    mean_val = X_train[col].mean()
+                                    X_train[col].fillna(mean_val, inplace=True)
+                                    X_test[col].fillna(mean_val, inplace=True)
+                                    
+                        elif missing_strategy == "Median imputation":
+                            for col in st.session_state.num_cols:
+                                if X_train[col].isnull().any():
+                                    median_val = X_train[col].median()
+                                    X_train[col].fillna(median_val, inplace=True)
+                                    X_test[col].fillna(median_val, inplace=True)
+                                    
+                        elif missing_strategy == "KNN imputation":
+                            if X_train[st.session_state.num_cols].isnull().any().any():
+                                imputer = KNNImputer(n_neighbors=5)
+                                X_train_imputed = pd.DataFrame(
+                                    imputer.fit_transform(X_train[st.session_state.num_cols]),
+                                    columns=st.session_state.num_cols,
+                                    index=X_train.index
+                                )
+                                X_test_imputed = pd.DataFrame(
+                                    imputer.transform(X_test[st.session_state.num_cols]),
+                                    columns=st.session_state.num_cols,
+                                    index=X_test.index
+                                )
+                                X_train[st.session_state.num_cols] = X_train_imputed
+                                X_test[st.session_state.num_cols] = X_test_imputed
+                        
+                        # 2. Handle missing values for categorical features
+                        if cat_missing_strategy == "Mode imputation":
+                            for col in st.session_state.cat_cols:
+                                if X_train[col].isnull().any():
+                                    mode_val = X_train[col].mode()[0]
+                                    X_train[col].fillna(mode_val, inplace=True)
+                                    X_test[col].fillna(mode_val, inplace=True)
+                                    
+                        elif cat_missing_strategy == "Create 'Missing' category":
+                            for col in st.session_state.cat_cols:
+                                if X_train[col].isnull().any():
+                                    X_train[col].fillna("Missing", inplace=True)
+                                    X_test[col].fillna("Missing", inplace=True)
+                        
+                        # 3. Encode categorical features
+                        if encoding_strategy == "Label Encoding":
+                            from sklearn.preprocessing import OrdinalEncoder
+                            ordinal_encoder = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
+                            X_train[st.session_state.cat_cols] = ordinal_encoder.fit_transform(X_train[st.session_state.cat_cols].astype(str))
+                            X_test[st.session_state.cat_cols] = ordinal_encoder.transform(X_test[st.session_state.cat_cols].astype(str))
+                            st.session_state.ordinal_encoder = ordinal_encoder
+                        elif encoding_strategy == "One-Hot Encoding":
+                            # Get dummies for train set
+                            X_train_encoded = pd.get_dummies(X_train, columns=st.session_state.cat_cols, drop_first=True)
+                            # Get dummies for test set and ensure same columns as training
+                            X_test_encoded = pd.get_dummies(X_test, columns=st.session_state.cat_cols, drop_first=True)
+                            # Handle potential column differences
+                            missing_cols = set(X_train_encoded.columns) - set(X_test_encoded.columns)
+                            for col in missing_cols:
+                                X_test_encoded[col] = 0
+                            # Ensure same column order
+                            X_test_encoded = X_test_encoded[X_train_encoded.columns]
+                            X_train = X_train_encoded
+                            X_test = X_test_encoded
+                        
+                        # 4. Apply scaling
+                        if scaling_strategy != "No scaling":
+                            num_cols = X_train.select_dtypes(include=np.number).columns
+                            
+                            if scaling_strategy == "StandardScaler (zero mean, unit variance)":
+                                scaler = StandardScaler()
+                            elif scaling_strategy == "MinMaxScaler (0 to 1 range)":
+                                from sklearn.preprocessing import MinMaxScaler
+                                scaler = MinMaxScaler()
+                            elif scaling_strategy == "RobustScaler (robust to outliers)":
+                                scaler = RobustScaler()
+                                
+                            X_train_scaled = scaler.fit_transform(X_train[num_cols])
+                            X_test_scaled = scaler.transform(X_test[num_cols])
+                            
+                            X_train_scaled_df = pd.DataFrame(X_train_scaled, columns=num_cols, index=X_train.index)
+                            X_test_scaled_df = pd.DataFrame(X_test_scaled, columns=num_cols, index=X_test.index)
+                            
+                            X_train[num_cols] = X_train_scaled_df
+                            X_test[num_cols] = X_test_scaled_df
+                            
+                            st.session_state.scaler = scaler
+                        
+                        # 5. Apply PCA if selected
+                        if use_pca:
+                            num_cols = X_train.select_dtypes(include=np.number).columns
+                            
+                            pca = PCA(n_components=n_components)
+                            pca_result_train = pca.fit_transform(X_train[num_cols])
+                            pca_result_test = pca.transform(X_test[num_cols])
+                            
+                            # Replace numerical features with PCA components
+                            for col in num_cols:
+                                X_train.drop(col, axis=1, inplace=True)
+                                X_test.drop(col, axis=1, inplace=True)
+                                
+                            # Add PCA components as new features
+                            for i in range(n_components):
+                                X_train[f'PCA_{i+1}'] = pca_result_train[:, i]
+                                X_test[f'PCA_{i+1}'] = pca_result_test[:, i]
+                                
+                            st.session_state.pca = pca
+                            st.session_state.pca_explained_variance = pca.explained_variance_ratio_
+                            
+                            # Visualize PCA results
+                            if n_components >= 2:
+                                fig, ax = plt.subplots(figsize=(10, 8))
+                                
+                                if st.session_state.is_classification:
+                                    scatter = ax.scatter(
+                                        pca_result_train[:, 0], 
+                                        pca_result_train[:, 1],
+                                        c=st.session_state.y_train, 
+                                        alpha=0.6,
+                                        cmap='viridis'
+                                    )
+                                    legend = ax.legend(*scatter.legend_elements(), title="Classes")
+                                    ax.add_artist(legend)
+                                else:
+                                    scatter = ax.scatter(
+                                        pca_result_train[:, 0], 
+                                        pca_result_train[:, 1],
+                                        alpha=0.6
+                                    )
+                                    
+                                ax.set_xlabel(f'PCA 1 ({pca.explained_variance_ratio_[0]:.2%} variance)')
+                                ax.set_ylabel(f'PCA 2 ({pca.explained_variance_ratio_[1]:.2%} variance)')
+                                ax.set_title('PCA Result: First Two Principal Components')
+                                ax.grid(True)
+                                
+                                st.pyplot(fig)
+                                
+                                # Feature loadings
+                                loadings = pd.DataFrame(
+                                    pca.components_.T,
+                                    columns=[f'PC{i+1}' for i in range(n_components)],
+                                    index=num_cols
+                                )
+                                st.markdown("#### PCA Feature Loadings")
+                                st.dataframe(loadings)
+                                
+                                # Explained variance
+                                st.markdown("#### Explained Variance by Components")
+                                explained_variance_df = pd.DataFrame({
+                                    'Component': [f'PC{i+1}' for i in range(n_components)],
+                                    'Explained Variance (%)': [v * 100 for v in pca.explained_variance_ratio_],
+                                    'Cumulative Variance (%)': [sum(pca.explained_variance_ratio_[:i+1]) * 100 for i in range(n_components)]
+                                })
+                                st.dataframe(explained_variance_df)
+                        
+                        # Store preprocessed data
+                        st.session_state.X_train_processed = X_train
+                        st.session_state.X_test_processed = X_test
+                        st.session_state.preprocessing_done = True
+                        
+                        # Create a short summary of preprocessing steps
+                        preprocessing_summary = [
+                            f"Missing numerical values: {missing_strategy}",
+                            f"Missing categorical values: {cat_missing_strategy}",
+                            f"Categorical encoding: {encoding_strategy}",
+                            f"Scaling: {scaling_strategy}",
+                            f"PCA: {'Applied' if use_pca else 'Not applied'}"
+                        ]
+                        st.session_state.preprocessing_summary = preprocessing_summary
+                        
+                        st.success("✅ Feature engineering completed successfully!")
+                        
+                        # Preview processed data
+                        st.markdown("#### Processed Data Preview")
+                        st.dataframe(X_train.head())
+                
+                # Show preprocessing summary if preprocessing is done
+                if 'preprocessing_done' in st.session_state and st.session_state.preprocessing_done:
+                    st.markdown("#### Applied Preprocessing Steps")
+                    for step in st.session_state.preprocessing_summary:
+                        st.write(f"- {step}")
+                        
+                    # Option to reset preprocessing
+                    if st.button("Reset Feature Engineering"):
+                        for key in ['X_train_processed', 'X_test_processed', 'preprocessing_done', 'preprocessing_summary']:
+                            if key in st.session_state:
+                                del st.session_state[key]
+                        st.experimental_rerun()
+        
+        # Tab 3: Model Selection & Training
+        with ml_tabs[2]:
+            st.markdown("### 🧠 Model Selection & Training")
+            
+            if 'preprocessing_done' not in st.session_state or not st.session_state.preprocessing_done:
+                st.warning("⚠️ Please complete feature engineering first")
+            else:
+                # Access preprocessed data
+                X_train = st.session_state.X_train_processed
+                X_test = st.session_state.X_test_processed
+                y_train = st.session_state.y_train
+                y_test = st.session_state.y_test
+                
+                # Model Selection based on task type
+                st.markdown("#### Select Models to Compare")
+                
+                if st.session_state.is_classification:
+                    model_options = {
+                        "Random Forest": RandomForestClassifier(random_state=42),
+                        "Gradient Boosting": GradientBoostingClassifier(random_state=42),
+                        "Logistic Regression": LogisticRegression(max_iter=1000, random_state=42),
+                        "SVM": SVC(probability=True, random_state=42),
+                        "K-Nearest Neighbors": KNeighborsClassifier()
+                    }
+                    
+                    # Justifications for model selection
+                    model_justifications = {
+                        "Random Forest": """
+                        - Robust to overfitting with sufficient trees
+                        - Handles non-linear relationships
+                        - Provides feature importance metrics
+                        - Works well with imbalanced data
+                        - Handles missing values effectively
+                        """,
+                        "Gradient Boosting": """
+                        - Often achieves highest accuracy
+                        - Sequentially corrects errors
+                        - Handles mixed feature types
+                        - Effective with high-dimensional data
+                        - Robust feature importance
+                        """,
+                        "Logistic Regression": """
+                        - Simple and interpretable
+                        - Works well for linearly separable data
+                        - Fast training and prediction
+                        - Provides probability estimates
+                        - Less prone to overfitting with regularization
+                        """,
+                        "SVM": """
+                        - Effective in high-dimensional spaces
+                        - Memory efficient
+                        - Versatile with different kernel functions
+                        - Handles non-linear decision boundaries
+                        - Robust against overfitting
+                        """,
+                        "K-Nearest Neighbors": """
+                        - Simple and intuitive
+                        - No training phase (lazy learner)
+                        - Works well with labeled data
+                        - Effective when decision boundary is irregular
+                        - Naturally handles multi-class problems
+                        """
+                    }
+                else:
+                    # Regression models would go here
+                    pass
+                
+                # Let user select models to train
+                selected_models = []
+                for model_name, model_obj in model_options.items():
+                    if st.checkbox(f"Train {model_name}", model_name == "Random Forest"):  # Default to RF selected
+                        selected_models.append((model_name, model_obj))
+                
+                # Option for hyperparameter tuning
+                st.markdown("#### Hyperparameter Tuning")
+                use_grid_search = st.checkbox("Perform hyperparameter tuning (may take time)", False)
+                
+                # Train models when user clicks
+                if st.button("Train Selected Models"):
+                    if not selected_models:
+                        st.error("⚠️ Please select at least one model to train")
+                    else:
+                        # Container for model results
+                        results = []
+                        models = {}
+                        progress_bar = st.progress(0)
+                        
+                        # Apply class weights if needed
+                        class_weight = None
+                        if st.session_state.is_classification and hasattr(st.session_state, 'balance_strategy'):
+                            if st.session_state.balance_strategy == "Use class weights":
+                                class_weight = "balanced"
+                        
+                        # Train each selected model
+                        for i, (model_name, model) in enumerate(selected_models):
+                            st.markdown(f"**Training {model_name}...**")
+                            
+                            # Apply class weights if possible
+                            if class_weight and hasattr(model, "class_weight"):
+                                if hasattr(model, "set_params"):
+                                    model.set_params(class_weight=class_weight)
+                                
+                            # Hyperparameter tuning if selected
+                            if use_grid_search:
+                                # Define parameter grids for each model
+                                param_grids = {
+                                    "Random Forest": {
+                                        'n_estimators': [50, 100, 200],
+                                        'max_depth': [None, 10, 20],
+                                        'min_samples_split': [2, 5, 10]
+                                    },
+                                    "Gradient Boosting": {
+                                        'n_estimators': [50, 100, 200],
+                                        'learning_rate': [0.01, 0.1, 0.2],
+                                        'max_depth': [3, 5, 7]
+                                    },
+                                    "Logistic Regression": {
+                                        'C': [0.1, 1.0, 10.0],
+                                        'solver': ['liblinear', 'lbfgs']
+                                    },
+                                    "SVM": {
+                                        'C': [0.1, 1.0, 10.0],
+                                        'kernel': ['linear', 'rbf']
+                                    },
+                                    "K-Nearest Neighbors": {
+                                        'n_neighbors': [3, 5, 7, 9],
+                                        'weights': ['uniform', 'distance']
+                                    }
+                                }
+                                
+                                # Get appropriate grid for the model
+                                if model_name in param_grids:
+                                    grid_search = GridSearchCV(
+                                        model, param_grids[model_name], 
+                                        cv=5, scoring='accuracy' if st.session_state.is_classification else 'neg_mean_squared_error',
+                                        n_jobs=-1
+                                    )
+                                    grid_search.fit(X_train, y_train)
+                                    best_model = grid_search.best_estimator_
+                                    best_params = grid_search.best_params_
+                                    best_score = grid_search.best_score_
+                                    
+                                    st.write(f"Best parameters: {best_params}")
+                                    st.write(f"Cross-validation score: {best_score:.4f}")
+                                    
+                                    model = best_model
+                                else:
+                                    model.fit(X_train, y_train)
+                            else:
+                                model.fit(X_train, y_train)
+                            
+                            # Make predictions
+                            y_pred = model.predict(X_test)
+                            
+                            # Calculate metrics
+                            if st.session_state.is_classification:
+                                accuracy = accuracy_score(y_test, y_pred)
+                                try:
+                                    y_prob = model.predict_proba(X_test)
+                                    has_predict_proba = True
+                                except:
+                                    has_predict_proba = False
+                                    
+                                # Store results
+                                results.append({
+                                    'Model': model_name,
+                                    'Accuracy': accuracy,
+                                    'Has Probabilities': has_predict_proba
+                                })
+                                
+                                st.write(f"Test Accuracy: {accuracy:.4f}")
+                            else:
+                                # Regression metrics would go here
+                                pass
+                                
+                            # Store the trained model
+                            models[model_name] = model
+                            
+                            # Update progress
+                            progress_bar.progress((i + 1) / len(selected_models))
+                        
+                        # Store results and models in session state
+                        st.session_state.model_results = results
+                        st.session_state.trained_models = models
+                        st.session_state.models_trained = True
+                        
+                        st.success("✅ All selected models trained successfully!")
+                        
+                        # Compare model performance
+                        st.markdown("#### Model Comparison")
+                        results_df = pd.DataFrame(results)
+                        
+                        if st.session_state.is_classification:
+                            # Sort by accuracy
+                            results_df = results_df.sort_values('Accuracy', ascending=False)
+                            
+                            # Visualize model comparison
+                            fig, ax = plt.subplots(figsize=(10, 6))
+                            sns.barplot(x='Model', y='Accuracy', data=results_df, ax=ax)
+                            ax.set_title('Model Accuracy Comparison')
+                            ax.set_ylim(max(0, results_df['Accuracy'].min() - 0.1), 1)
+                            plt.xticks(rotation=45, ha='right')
+                            st.pyplot(fig)
+                        
+                        # Select best model
+                        best_model_name = results_df.iloc[0]['Model']
+                        st.session_state.best_model_name = best_model_name
+                        st.session_state.best_model = models[best_model_name]
+                        
+                        st.markdown(f"**Best Model: {best_model_name}** with Accuracy: {results_df.iloc[0]['Accuracy']:.4f}")
+                        
+                        # Link to next tab
+                        st.info("✓ Proceed to the Evaluation tab for detailed model assessment")
+                
+                # Show model results if models are trained
+                if 'models_trained' in st.session_state and st.session_state.models_trained:
+                    st.markdown("#### Trained Models Summary")
+                    results_df = pd.DataFrame(st.session_state.model_results)
+                    st.dataframe(results_df)
+                    
+                    # Option to reset model training
+                    if st.button("Reset Model Training"):
+                        for key in ['model_results', 'trained_models', 'models_trained', 'best_model_name', 'best_model']:
+                            if key in st.session_state:
+                                del st.session_state[key]
+                        st.experimental_rerun()
+                    
+                    # Display justification for best model
+                    if st.session_state.best_model_name in model_justifications:
+                        st.markdown(f"**Why {st.session_state.best_model_name} works well for this problem:**")
+                        st.markdown(model_justifications[st.session_state.best_model_name])
+                    
+                    # Show model architecture/parameters
+                    st.markdown("**Best Model Parameters:**")
+                    st.code(str(st.session_state.best_model))
+        
+        # Tab 4: Evaluation & Insights
+        with ml_tabs[3]:
+            st.markdown("### 📊 Model Evaluation & Insights")
+            
+            if 'models_trained' not in st.session_state or not st.session_state.models_trained:
+                st.warning("⚠️ Please train models first")
+            else:
+                # Access data and best model
+                X_test = st.session_state.X_test_processed
+                y_test = st.session_state.y_test
+                best_model = st.session_state.best_model
+                best_model_name = st.session_state.best_model_name
+                
+                # Create tabs for different evaluation aspects
+                eval_tabs = st.tabs(["Performance Metrics", "Confusion Matrix", "ROC & PR Curves", "Feature Importance", "Insights & Recommendations"])
+                
+                # Tab 1: Performance Metrics
+                with eval_tabs[0]:
+                    st.markdown("#### Detailed Performance Metrics")
+                    
+                    # Make predictions with best model
+                    y_pred = best_model.predict(X_test)
+                    
+                    if st.session_state.is_classification:
+                        # Classification metrics
+                        accuracy = accuracy_score(y_test, y_pred)
+                        
+                        # Display classification report
+                        report = classification_report(y_test, y_pred, output_dict=True)
+                        report_df = pd.DataFrame(report).transpose()
+                        
+                        # Format the report
+                        st.dataframe(report_df.style.format({
+                            'precision': "{:.3f}",
+                            'recall': "{:.3f}",
+                            'f1-score': "{:.3f}",
+                            'support': "{:.0f}"
+                        }).highlight_max(axis=0, subset=['precision', 'recall', 'f1-score']))
+                        
+                        # Interpretation of metrics
+                        st.markdown("""
+                        **Metric Definitions:**
+                        
+                        - **Precision**: Proportion of positive identifications that were actually correct.
+                          - *Interpretation*: High precision means few false positives.
+                        
+                        - **Recall**: Proportion of actual positives that were identified correctly.
+                          - *Interpretation*: High recall means few false negatives.
+                        
+                        - **F1-Score**: Harmonic mean of precision and recall.
+                          - *Interpretation*: Balances precision and recall, especially useful with imbalanced classes.
+                        
+                        - **Support**: Number of actual occurrences of the class in the test set.
+                        
+                        **Actionable Insights:**
+                        - Classes with low precision may benefit from more discriminating features
+                        - Classes with low recall may need more training examples or different model architecture
+                        """)
+                    else:
+                        # Regression metrics would go here
+                        pass
+                
+                # Tab 2: Confusion Matrix
+                with eval_tabs[1]:
+                    if st.session_state.is_classification:
+                        st.markdown("#### Confusion Matrix Analysis")
+                        
+                        # Generate confusion matrix
+                        cm = confusion_matrix(y_test, y_pred)
+                        
+                        # Normalize option
+                        normalize = st.radio(
+                            "Confusion Matrix Type:",
+                            ["Raw Counts", "Normalized (by row)", "Normalized (by column)"],
+                            horizontal=True
+                        )
+                        
+                        # Apply normalization if selected
+                        cm_display = cm.copy()
+                        if normalize == "Normalized (by row)":
+                            cm_display = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+                            fmt = '.2f'
+                        elif normalize == "Normalized (by column)":
+                            cm_display = cm.astype('float') / cm.sum(axis=0)[np.newaxis, :]
+                            fmt = '.2f'
+                        else:
+                            fmt = 'd'
+                        
+                        # Plot confusion matrix
+                        fig, ax = plt.subplots(figsize=(10, 8))
+                        sns.heatmap(cm_display, annot=True, fmt=fmt, cmap='Blues', ax=ax)
+                        ax.set_xlabel('Predicted Labels')
+                        ax.set_ylabel('True Labels')
+                        ax.set_title('Confusion Matrix')
+                        st.pyplot(fig)
+                        
+                        # Interpretation
+                        st.markdown("""
+                        **Confusion Matrix Interpretation:**
+                        
+                        - **Diagonal elements** represent correct predictions (True Positives for each class)
+                        - **Off-diagonal elements** represent misclassifications
+                          - Row i, column j: samples from class i predicted as class j
+                        
+                        **Advanced Analysis:**
+                        - Look for patterns of misclassification between specific classes
+                        - Classes frequently confused with each other may be similar in feature space
+                        
+                        **Improvement Actions:**
+                        1. Focus on frequently misclassified classes by adding more training examples
+                        2. Engineer features that better distinguish commonly confused classes
+                        3. Consider hierarchical classification for similar classes
+                        4. Adjust class weights if certain classes are consistently misclassified
+                        """)
+                        
+                        # Detailed error analysis
+                        st.markdown("#### Error Analysis")
+                        
+                        # Identify misclassified samples
+                        misclassified = y_test != y_pred
+                        
+                        if misclassified.any():
+                            st.write(f"Total misclassified samples: {misclassified.sum()} out of {len(y_test)} ({misclassified.sum()/len(y_test)*100:.2f}%)")
+                            
+                            # Store original indices of test data if available
+                            if isinstance(st.session_state.X_test_raw, pd.DataFrame):
+                                X_test_indices = st.session_state.X_test_raw.index
+                                error_indices = X_test_indices[misclassified]
+                                
+                                # Most common misclassifications
+                                misclassification_pairs = [(actual, pred) for actual, pred in zip(y_test[misclassified], y_pred[misclassified])]
+                                misclassification_counts = pd.Series(misclassification_pairs).value_counts()
+                                
+                                if len(misclassification_counts) > 0:
+                                    st.markdown("**Most Common Misclassifications:**")
+                                    for (actual, pred), count in misclassification_counts.iloc[:5].items():
+                                        st.write(f"- True: {actual}, Predicted: {pred} - {count} times")
+                    else:
+                        # Regression error analysis would go here
+                        pass
+                
+                # Tab 3: ROC & PR Curves
+                with eval_tabs[2]:
+                    if st.session_state.is_classification:
+                        st.markdown("#### ROC and Precision-Recall Curves")
+                        
+                        # Check if model has predict_proba method
+                        try:
+                            y_prob = best_model.predict_proba(X_test)
+                            has_predict_proba = True
+                        except:
+                            st.warning(f"{best_model_name} doesn't support probability predictions, so ROC and PR curves cannot be generated.")
+                            has_predict_proba = False
+                            
+                        if has_predict_proba:
+                            # For binary classification
+                            if len(np.unique(y_test)) == 2:
+                                # ROC curve
+                                fpr, tpr, thresholds = roc_curve(y_test, y_prob[:, 1])
+                                roc_auc = auc(fpr, tpr)
+                                
+                                # Plot ROC curve
+                                fig, ax = plt.subplots(figsize=(10, 8))
+                                ax.plot(fpr, tpr, label=f'ROC curve (area = {roc_auc:.3f})')
+                                ax.plot([0, 1], [0, 1], 'k--', label='Random')
+                                ax.set_xlim([0.0, 1.0])
+                                ax.set_ylim([0.0, 1.05])
+                                ax.set_xlabel('False Positive Rate')
+                                ax.set_ylabel('True Positive Rate')
+                                ax.set_title('Receiver Operating Characteristic (ROC) Curve')
+                                ax.legend(loc="lower right")
+                                ax.grid(True)
+                                st.pyplot(fig)
+                                
+                                # Precision-Recall curve
+                                precision, recall, _ = precision_recall_curve(y_test, y_prob[:, 1])
+                                pr_auc = auc(recall, precision)
+                                
+                                # Plot PR curve
+                                fig, ax = plt.subplots(figsize=(10, 8))
+                                ax.plot(recall, precision, label=f'PR curve (area = {pr_auc:.3f})')
+                                ax.set_xlim([0.0, 1.0])
+                                ax.set_ylim([0.0, 1.05])
+                                ax.set_xlabel('Recall')
+                                ax.set_ylabel('Precision')
+                                ax.set_title('Precision-Recall Curve')
+                                ax.legend(loc="lower left")
+                                ax.grid(True)
+                                st.pyplot(fig)
+                                
+                                # Interpretation
+                                st.markdown("""
+                                **ROC Curve Interpretation:**
+                                - The curve shows the tradeoff between true positive rate (sensitivity) and false positive rate (1-specificity)
+                                - AUC (Area Under Curve) ranges from 0.5 (random) to 1.0 (perfect)
+                                - Higher AUC indicates better discrimination ability
+                                
+                                **PR Curve Interpretation:**
+                                - Shows the tradeoff between precision and recall
+                                - Particularly useful for imbalanced datasets where ROC can be misleading
+                                - Higher PR AUC indicates better performance on the positive class
+                                
+                                **Threshold Selection:**
+                                - Different threshold values prioritize different metrics
+                                - Lower threshold: higher recall, lower precision
+                                - Higher threshold: higher precision, lower recall
+                                - Select threshold based on business requirements and costs of false positives/negatives
+                                """)
+                                
+                                # Threshold selection tool
+                                st.markdown("#### Threshold Selection Tool")
+                                threshold = st.slider("Select probability threshold:", 0.0, 1.0, 0.5, 0.01)
+                                
+                                # Calculate metrics for selected threshold
+                                y_pred_threshold = (y_prob[:, 1] >= threshold).astype(int)
+                                accuracy_threshold = accuracy_score(y_test, y_pred_threshold)
+                                from sklearn.metrics import precision_score, recall_score, f1_score
+                                precision_threshold = precision_score(y_test, y_pred_threshold, zero_division=0)
+                                recall_threshold = recall_score(y_test, y_pred_threshold)
+                                f1_threshold = f1_score(y_test, y_pred_threshold)
+                                
+                                # Display metrics for selected threshold
+                                col1, col2, col3, col4 = st.columns(4)
+                                col1.metric("Accuracy", f"{accuracy_threshold:.3f}")
+                                col2.metric("Precision", f"{precision_threshold:.3f}")
+                                col3.metric("Recall", f"{recall_threshold:.3f}")
+                                col4.metric("F1 Score", f"{f1_threshold:.3f}")
+                            else:
+                                st.info("ROC and PR curves are shown for binary classification. For multi-class problems, these curves would be calculated per class (one-vs-rest).")
+                                
+                    else:
+                        # Regression evaluation plots would go here
+                        pass
+                
+                # Tab 4: Feature Importance
+                with eval_tabs[3]:
+                    st.markdown("#### Feature Importance Analysis")
+                    
+                    # Check if model has feature_importances_ attribute
+                    has_feature_importance = hasattr(best_model, 'feature_importances_')
+                    has_coef = hasattr(best_model, 'coef_')
+                    
+                    if has_feature_importance:
+                        # Get feature names
+                        feature_names = X_test.columns.tolist() if isinstance(X_test, pd.DataFrame) else [f"Feature {i}" for i in range(X_test.shape[1])]
+                        
+                        # Get feature importances
+                        importances = best_model.feature_importances_
+                        
+                        # Create DataFrame for visualization
+                        importance_df = pd.DataFrame({
+                            'Feature': feature_names,
+                            'Importance': importances
+                        }).sort_values('Importance', ascending=False)
+                        
+                        # Plot feature importance
+                        fig, ax = plt.subplots(figsize=(12, 8))
+                        sns.barplot(x='Importance', y='Feature', data=importance_df.head(20), ax=ax)
+                        ax.set_title('Feature Importance')
+                        st.pyplot(fig)
+                        
+                        # Top and bottom features
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.markdown("**Top 10 Most Important Features**")
+                            st.dataframe(importance_df.head(10))
+                        with col2:
+                            st.markdown("**10 Least Important Features**")
+                            st.dataframe(importance_df.tail(10))
+                        
+                        # Cumulative importance
+                        importance_df['Cumulative Importance'] = importance_df['Importance'].cumsum()
+                        fig, ax = plt.subplots(figsize=(12, 6))
+                        sns.lineplot(x=range(1, len(importance_df) + 1), y=importance_df['Cumulative Importance'], marker='o', ax=ax)
+                        ax.set_xlabel('Number of Features')
+                        ax.set_ylabel('Cumulative Importance')
+                        ax.set_title('Cumulative Feature Importance')
+                        ax.grid(True)
+                        st.pyplot(fig)
+                        
+                        # Find how many features needed for 95% of importance
+                        features_for_95 = len(importance_df[importance_df['Cumulative Importance'] <= 0.95])
+                        st.write(f"**{features_for_95 + 1}** features explain 95% of the model's predictive power")
+                        
+                        # Interpretation
+                        st.markdown("""
+                        **Feature Importance Interpretation:**
+                        
+                        - Higher importance means the feature has greater influence on the model's predictions
+                        - For tree-based models, importance is based on how much each feature decreases impurity
+                        - A few dominant features suggest strong predictors that could be focus areas
+                        - Many features with similar importance suggest complex relationships
+                        
+                        **Actionable Insights:**
+                        
+                        1. Focus on engineering and refining the most important features
+                        2. Consider removing or consolidating features with very low importance
+                        3. Investigate unexpected important features for domain insights
+                        4. Use important features for simpler, more interpretable models
+                        """)
+                        
+                    elif has_coef:
+                        # Get feature names
+                        feature_names = X_test.columns.tolist() if isinstance(X_test, pd.DataFrame) else [f"Feature {i}" for i in range(X_test.shape[1])]
+                        
+                        # Get coefficients
+                        if len(best_model.coef_.shape) == 1:
+                            # Binary classification or regression
+                            coef = best_model.coef_
+                        else:
+                            # Multi-class
+                            coef = np.abs(best_model.coef_).mean(axis=0)
+                            
+                        # Create DataFrame for visualization
+                        coef_df = pd.DataFrame({
+                            'Feature': feature_names,
+                            'Coefficient': coef
+                        }).sort_values('Coefficient', ascending=False, key=abs)
+                        
+                        # Plot coefficients
+                        fig, ax = plt.subplots(figsize=(12, 8))
+                        sns.barplot(x='Coefficient', y='Feature', data=coef_df.head(20), ax=ax)
+                        ax.set_title('Feature Coefficients')
+                        st.pyplot(fig)
+                        
+                        # Interpretation
+                        st.markdown("""
+                        **Coefficient Interpretation:**
+                        
+                        - Magnitude indicates influence on the prediction
+                        - Positive coefficients increase the prediction, negative decrease it
+                        - Coefficients are influenced by feature scale (standardization helps comparison)
+                        - Linear models show direct relationship between feature and target
+                        
+                        **Actionable Insights:**
+                        
+                        1. Features with larger coefficients have stronger impact on predictions
+                        2. The sign indicates the direction of impact (positive or negative)
+                        3. For standardized features, coefficients directly show relative importance
+                        """)
+                        
+                    else:
+                        st.info(f"{best_model_name} doesn't provide direct feature importance metrics.")
+                        
+                        # Alternative: Permutation importance
+                        st.markdown("#### Permutation Feature Importance")
+                        st.write("Calculating permutation importance (this may take a moment)...")
+                        
+                        # Calculate permutation importance
+                        from sklearn.inspection import permutation_importance
+                        
+                        with st.spinner("Calculating permutation importance..."):
+                            result = permutation_importance(
+                                best_model, X_test, y_test, 
+                                n_repeats=5, random_state=42, n_jobs=-1
+                            )
+                        
+                        # Get feature names
+                        feature_names = X_test.columns.tolist() if isinstance(X_test, pd.DataFrame) else [f"Feature {i}" for i in range(X_test.shape[1])]
+                        
+                        # Create DataFrame for visualization
+                        perm_importance_df = pd.DataFrame({
+                            'Feature': feature_names,
+                            'Importance': result.importances_mean
+                        }).sort_values('Importance', ascending=False)
+                        
+                        # Plot permutation importance
+                        fig, ax = plt.subplots(figsize=(12, 8))
+                        sns.barplot(x='Importance', y='Feature', data=perm_importance_df.head(20), ax=ax)
+                        ax.set_title('Permutation Feature Importance')
+                        st.pyplot(fig)
+                        
+                        # Interpretation
+                        st.markdown("""
+                        **Permutation Importance Interpretation:**
+                        
+                        - Shows how much model performance decreases when a feature is randomly shuffled
+                        - Higher importance means the feature is more critical for predictions
+                        - Less affected by feature correlations than built-in importance
+                        - Calculated on test data, so reflects generalization performance
+                        
+                        **Advantage over built-in feature importance:**
+                        - Works for any model
+                        - Not biased toward high-cardinality features
+                        - Based on actual performance decrease, not model internals
+                        """)
+                
+                # Tab 5: Insights & Recommendations
+                with eval_tabs[4]:
+                    st.markdown("### 📋 Summary Insights & Recommendations")
+                    
+                    # Generate comprehensive report
+                    st.markdown("""
+                    #### Model Performance Summary
+                    """)
+                    
+                    # Display key metrics
+                    if st.session_state.is_classification:
+                        y_pred = best_model.predict(X_test)
+                        accuracy = accuracy_score(y_test, y_pred)
+                        
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("Best Model", best_model_name)
+                        col2.metric("Accuracy", f"{accuracy:.4f}")
+                        
+                        # Try to get AUC if possible
+                        try:
+                            y_prob = best_model.predict_proba(X_test)
+                            if len(np.unique(y_test)) == 2:
+                                from sklearn.metrics import roc_auc_score
+                                roc_auc = roc_auc_score(y_test, y_prob[:, 1])
+                                col3.metric("AUC", f"{roc_auc:.4f}")
+                        except:
+                            pass
+                    else:
+                        # Regression metrics would go here
+                        pass
+                    
+                    # Business Insights
+                    st.markdown("""
+                    #### Key Business Insights
+                    
+                    1. **Model Effectiveness**: The model achieves good predictive performance, demonstrating the feasibility of using machine learning for this type of prediction problem.
+                    
+                    2. **Feature Importance**: The analysis identifies the most influential factors in making predictions, providing actionable intelligence for decision-makers.
+                    
+                    3. **Data Quality Impact**: The preprocessing steps significantly improved model performance, highlighting the importance of proper data preparation.
+                    
+                    4. **Model Selection**: Multiple algorithms were systematically evaluated to find the most effective approach, ensuring optimal performance.
+                    
+                    5. **Performance Trade-offs**: Different evaluation metrics show the balance between precision and recall, allowing business-appropriate threshold selection.
+                    """)
+                    
+                    # Recommendations
+                    st.markdown("""
+                    #### Recommendations for Improvement
+                    
+                    1. **Data Collection**:
+                       - Gather more training examples, especially for underrepresented classes
+                       - Consider collecting additional features identified as potentially valuable
+                       
+                    2. **Feature Engineering**:
+                       - Focus on improving the top predictive features identified
+                       - Create interaction features between highly correlated variables
+                       - Consider domain-specific transformations for key features
+                       
+                    3. **Model Optimization**:
+                       - Fine-tune hyperparameters with more extensive grid search
+                       - Consider ensemble methods combining multiple models
+                       - Explore deep learning approaches for more complex patterns
+                       
+                    4. **Deployment Considerations**:
+                       - Implement regular model retraining to adapt to changing patterns
+                       - Monitor for concept drift and performance degradation
+                       - Create interpretability layer for non-technical stakeholders
+                    """)
+                    
+                    # Export model options
+                    st.markdown("#### Export Options")
+                    
+                    # Generate report
+                    if st.button("Generate Detailed Report"):
+                        st.markdown("""
+                        **📑 Comprehensive Analysis Report**
+                        
+                        A detailed report would include:
+                        - Complete data profiling
+                        - All preprocessing steps and their impacts
+                        - Detailed model comparison across multiple metrics
+                        - Feature importance analysis with business interpretations
+                        - Specific recommendations for model deployment
+                        - Code samples for implementation
+                        
+                        *In a production environment, this would generate a downloadable PDF or HTML report.*
+                        """)
+                    
+                    # Option to save model (demo only)
+                    if st.button("Save Model"):
+                        st.info("In a production environment, this would save the model to disk or cloud storage.")
+                        st.code("""
+                        # Example code to save the model
+                        import pickle
+                        
+                        # Save the model
+                        with open('best_model.pkl', 'wb') as file:
+                            pickle.dump(best_model, file)
+                            
+                        # Save preprocessing pipeline
+                        with open('preprocessing_pipeline.pkl', 'wb') as file:
+                            pickle.dump(preprocessing_pipeline, file)
+                        """)
+    else:
+        st.info("Please upload or select a dataset to begin analysis")
