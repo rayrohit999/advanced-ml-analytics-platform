@@ -972,6 +972,17 @@ if st.session_state.data_loaded:
                     
                     st.markdown(f"**Features**: {X.shape[1]} total ({len(st.session_state.num_cols)} numerical, {len(st.session_state.cat_cols)} categorical)")
                     
+                    # If classification and stratify is selected, check if stratification is possible
+                    if is_classification and stratify:
+                        # Count occurrences of each class
+                        class_counts = y.value_counts()
+                        min_class_count = class_counts.min()
+                        
+                        # Warn if any class has fewer than 2 samples and disable stratification
+                        if min_class_count < 2:
+                            st.warning(f"⚠️ Stratified sampling not possible: The smallest class has only {min_class_count} sample(s). Using random sampling instead.")
+                            stratify = False
+                    
                     if stratify and is_classification:
                         X_train, X_test, y_train, y_test = train_test_split(
                             X, y, test_size=test_size, random_state=random_seed, stratify=y
