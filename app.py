@@ -3,10 +3,10 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler, LabelEncoder, RobustScaler
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, RandomForestRegressor, GradientBoostingRegressor
+from sklearn.linear_model import LogisticRegression, LinearRegression, Ridge, Lasso, ElasticNet
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from sklearn.svm import SVC, SVR
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, roc_curve, auc, precision_recall_curve
 from sklearn.decomposition import PCA
 from sklearn.impute import KNNImputer
@@ -38,7 +38,8 @@ def load_example_dataset(dataset_name, dataset_urls):
         os.makedirs(data_dir)
     
     # Define local file path
-    file_name = dataset_name.lower().replace(" ", "_") + ".csv"
+    file_extension = ".json" if "JSON" in dataset_name else ".csv"
+    file_name = dataset_name.lower().replace(" ", "_").replace("(", "").replace(")", "") + file_extension
     local_path = os.path.join(data_dir, file_name)
     
     # Try to load from URL first
@@ -48,11 +49,30 @@ def load_example_dataset(dataset_name, dataset_urls):
             response = requests.get(dataset_urls[dataset_name], timeout=10)
             response.raise_for_status()  # Raise error for bad responses
             
-            # Parse CSV from response content
-            data = pd.read_csv(StringIO(response.text))
+            # Parse data based on format
+            if file_extension == ".json":
+                import json
+                json_data = response.json()
+                
+                # Handle different JSON structures
+                if isinstance(json_data, list):
+                    data = pd.json_normalize(json_data)
+                elif isinstance(json_data, dict):
+                    if any(isinstance(value, list) for value in json_data.values()):
+                        data = pd.DataFrame(json_data)
+                    else:
+                        data = pd.DataFrame([json_data])
+                else:
+                    raise ValueError("Unsupported JSON structure")
+                    
+                # Cache as CSV for consistency
+                data.to_csv(local_path.replace('.json', '.csv'), index=False)
+            else:
+                # Parse CSV from response content
+                data = pd.read_csv(StringIO(response.text))
+                # Cache the dataset locally for future use
+                data.to_csv(local_path, index=False)
             
-            # Cache the dataset locally for future use
-            data.to_csv(local_path, index=False)
             st.success(f"{dataset_name} dataset loaded successfully!")
             
             return data
@@ -61,10 +81,11 @@ def load_example_dataset(dataset_name, dataset_urls):
         st.warning(f"Could not download {dataset_name} dataset: {str(e)}")
         
         # Try to load from local cache if available
-        if os.path.exists(local_path):
+        cache_path = local_path.replace('.json', '.csv') if file_extension == ".json" else local_path
+        if os.path.exists(cache_path):
             st.info(f"Loading {dataset_name} dataset from local cache...")
             try:
-                return pd.read_csv(local_path)
+                return pd.read_csv(cache_path)
             except Exception as e2:
                 st.error(f"Error loading from local cache: {str(e2)}")
         
@@ -135,7 +156,8 @@ example_datasets = {
     "Iris Classification": "https://raw.githubusercontent.com/mwaskom/seaborn-data/master/iris.csv",
     "Titanic Survival": "https://raw.githubusercontent.com/datasciencedojo/datasets/master/titanic.csv",
     # Use GitHub raw content instead of direct UCI link for more reliability
-    "Wine Quality": "https://raw.githubusercontent.com/SiddharthChabukswar/UCI-ML-Repository-Datasets/master/Wine%20Quality/winequality-red.csv"
+    "Wine Quality": "https://raw.githubusercontent.com/SiddharthChabukswar/UCI-ML-Repository-Datasets/master/Wine%20Quality/winequality-red.csv",
+    "Countries Data (JSON)": "https://restcountries.com/v3.1/all?fields=name,capital,population,area,region"
 }
 
 selected_example = st.sidebar.selectbox("Try an example dataset:", [""] + list(example_datasets.keys()))
@@ -160,7 +182,29 @@ st.sidebar.markdown("""
 
 # Step 1: Upload Dataset with enhanced options
 st.markdown("## 📤 Data Acquisition")
-uploaded_file = st.file_uploader("Upload your CSV dataset", type="csv")
+
+# Let user choose file format
+st.markdown("### File Format Selection")
+file_format = st.radio(
+    "Select your data file format:",
+    ["CSV", "JSON"],
+    horizontal=True,
+    help="Choose the format of your data file"
+)
+
+# File uploader based on selected format
+if file_format == "CSV":
+    uploaded_file = st.file_uploader(
+        "Upload your CSV dataset", 
+        type=["csv"],
+        help="Upload a comma-separated values file (.csv)"
+    )
+else:
+    uploaded_file = st.file_uploader(
+        "Upload your JSON dataset", 
+        type=["json"],
+        help="Upload a JSON file (.json) - should contain an array of objects or a single object with arrays"
+    )
 
 # Load example dataset if selected
 if selected_example and not use_builtin:
@@ -228,15 +272,59 @@ elif use_builtin:
         
 elif uploaded_file is not None:
     try:
-        df = pd.read_csv(uploaded_file)
+        if file_format == "CSV":
+            df = pd.read_csv(uploaded_file)
+            st.success("CSV dataset uploaded successfully!")
+        else:  # JSON format
+            import json
+            
+            # Read JSON file
+            json_data = json.load(uploaded_file)
+            
+            # Handle different JSON structures
+            if isinstance(json_data, list):
+                # List of objects - direct conversion
+                df = pd.json_normalize(json_data)
+                st.success("JSON dataset (array format) uploaded successfully!")
+                
+            elif isinstance(json_data, dict):
+                # Check if it's a nested structure or flat dictionary
+                if any(isinstance(value, list) for value in json_data.values()):
+                    # Dictionary with arrays - assume column-oriented data
+                    df = pd.DataFrame(json_data)
+                    st.success("JSON dataset (object with arrays) uploaded successfully!")
+                else:
+                    # Single object - convert to single-row DataFrame
+                    df = pd.DataFrame([json_data])
+                    st.success("JSON dataset (single object) uploaded successfully!")
+                    st.info("Note: Single object converted to one-row dataset")
+            else:
+                raise ValueError("Unsupported JSON structure. Please provide an array of objects or an object with arrays.")
+                
         st.session_state.data_loaded = True
-        st.success("Dataset uploaded successfully!")
+        
+        # Display JSON structure info if JSON was uploaded
+        if file_format == "JSON":
+            st.info(f"JSON structure detected and converted to DataFrame with {df.shape[0]} rows and {df.shape[1]} columns")
+            
+    except json.JSONDecodeError as e:
+        st.error(f"Invalid JSON format: {str(e)}")
+        st.markdown("Please ensure your JSON file is properly formatted.")
+        st.session_state.data_loaded = False
     except Exception as e:
         st.error(f"Error reading uploaded file: {str(e)}")
-        st.markdown("Please ensure your file is a valid CSV format.")
+        if file_format == "CSV":
+            st.markdown("Please ensure your file is a valid CSV format.")
+        else:
+            st.markdown("""
+            **JSON Format Requirements:**
+            - Array of objects: `[{"col1": "val1", "col2": "val2"}, ...]`
+            - Object with arrays: `{"col1": ["val1", "val2"], "col2": ["val3", "val4"]}`
+            - Single object: `{"col1": "val1", "col2": "val2"}`
+            """)
         st.session_state.data_loaded = False
 else:
-    st.info("Please upload a CSV file or select an example dataset to begin analysis.")
+    st.info("Please upload a CSV/JSON file or select an example dataset to begin analysis.")
     st.session_state.data_loaded = False
 
 if st.session_state.data_loaded:
@@ -775,8 +863,8 @@ if st.session_state.data_loaded:
     st.markdown("## 🤖 Machine Learning Pipeline")
     
     if st.session_state.data_loaded:
-        # Create tabs for preprocessing, model selection, and evaluation
-        ml_tabs = st.tabs(["Data Preparation", "Feature Engineering", "Model Selection & Training", "Evaluation & Insights"])
+        # Create tabs for preprocessing, model selection, evaluation, and prediction
+        ml_tabs = st.tabs(["Data Preparation", "Feature Engineering", "Model Selection & Training", "Evaluation & Insights", "🔮 Make Predictions"])
         
         # Tab 1: Data Preparation
         with ml_tabs[0]:
@@ -905,7 +993,7 @@ if st.session_state.data_loaded:
                     for key in ['X_original', 'y_original', 'X_train_raw', 'X_test_raw', 'y_train', 'y_test']:
                         if key in st.session_state:
                             del st.session_state[key]
-                    st.experimental_rerun()
+                    st.rerun()
         
         # Tab 2: Feature Engineering
         with ml_tabs[1]:
@@ -1158,7 +1246,7 @@ if st.session_state.data_loaded:
                         for key in ['X_train_processed', 'X_test_processed', 'preprocessing_done', 'preprocessing_summary']:
                             if key in st.session_state:
                                 del st.session_state[key]
-                        st.experimental_rerun()
+                        st.rerun()
         
         # Tab 3: Model Selection & Training
         with ml_tabs[2]:
@@ -1173,10 +1261,31 @@ if st.session_state.data_loaded:
                 y_train = st.session_state.y_train
                 y_test = st.session_state.y_test
                 
-                # Model Selection based on task type
-                st.markdown("#### Select Models to Compare")
+                # Manual Model Type Selection Override
+                st.markdown("#### 🎯 Choose Your Machine Learning Task")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.info("**Classification**: Predicting categories/classes\n\n📋 Examples: \n• Email: Spam/Not Spam\n• Medical: Disease/Healthy\n• Business: Customer Segment\n• Finance: Loan Approval/Denial")
+                with col2:
+                    st.info("**Regression**: Predicting continuous numerical values\n\n📊 Examples: \n• Real Estate: House Prices\n• Business: Sales Revenue\n• Weather: Temperature Prediction\n• Finance: Stock Prices")
+                
+                # Allow manual override of automatic detection
+                task_type = st.radio(
+                    "Select the type of machine learning task:",
+                    options=["Classification", "Regression"],
+                    index=0 if st.session_state.is_classification else 1,
+                    help="Choose the type of prediction task based on your target variable"
+                )
+                
+                # Update task type if changed
+                st.session_state.is_classification = (task_type == "Classification")
+                
+                # Model Selection based on chosen task type
+                st.markdown("#### 🔧 Select Models to Compare")
                 
                 if st.session_state.is_classification:
+                    st.markdown("**🎯 Classification Models Available:**")
                     model_options = {
                         "Random Forest": RandomForestClassifier(random_state=42),
                         "Gradient Boosting": GradientBoostingClassifier(random_state=42),
@@ -1188,50 +1297,174 @@ if st.session_state.data_loaded:
                     # Justifications for model selection
                     model_justifications = {
                         "Random Forest": """
-                        - Robust to overfitting with sufficient trees
-                        - Handles non-linear relationships
-                        - Provides feature importance metrics
-                        - Works well with imbalanced data
-                        - Handles missing values effectively
+                        **Best for**: High accuracy, feature importance analysis, robust predictions
+                        
+                        **Strengths**:
+                        - Excellent performance with minimal tuning
+                        - Handles non-linear relationships naturally
+                        - Built-in feature importance ranking
+                        - Robust to outliers and missing values
+                        - Works well with imbalanced datasets
+                        
+                        **Use When**: You need reliable predictions with interpretable feature importance
                         """,
                         "Gradient Boosting": """
-                        - Often achieves highest accuracy
-                        - Sequentially corrects errors
-                        - Handles mixed feature types
-                        - Effective with high-dimensional data
-                        - Robust feature importance
+                        **Best for**: Maximum predictive accuracy, complex pattern recognition
+                        
+                        **Strengths**:
+                        - Often achieves highest accuracy in competitions
+                        - Sequentially learns from previous errors
+                        - Excellent with mixed data types
+                        - Strong performance on tabular data
+                        - Provides feature importance
+                        
+                        **Use When**: Accuracy is the top priority and you have sufficient data
                         """,
                         "Logistic Regression": """
-                        - Simple and interpretable
-                        - Works well for linearly separable data
+                        **Best for**: Interpretability, baseline models, probability estimates
+                        
+                        **Strengths**:
+                        - Highly interpretable coefficients
                         - Fast training and prediction
-                        - Provides probability estimates
+                        - Provides well-calibrated probabilities
+                        - Works well with linear relationships
                         - Less prone to overfitting with regularization
+                        
+                        **Use When**: You need explainable predictions or a reliable baseline
                         """,
                         "SVM": """
-                        - Effective in high-dimensional spaces
-                        - Memory efficient
+                        **Best for**: High-dimensional data, complex decision boundaries
+                        
+                        **Strengths**:
+                        - Excellent for high-dimensional spaces
+                        - Memory efficient (uses support vectors)
                         - Versatile with different kernel functions
-                        - Handles non-linear decision boundaries
-                        - Robust against overfitting
+                        - Effective with limited training data
+                        - Strong theoretical foundations
+                        
+                        **Use When**: You have high-dimensional features or complex patterns
                         """,
                         "K-Nearest Neighbors": """
-                        - Simple and intuitive
-                        - No training phase (lazy learner)
-                        - Works well with labeled data
-                        - Effective when decision boundary is irregular
+                        **Best for**: Local patterns, non-parametric classification
+                        
+                        **Strengths**:
+                        - Simple and intuitive approach
+                        - No assumptions about data distribution
                         - Naturally handles multi-class problems
+                        - Good for irregular decision boundaries
+                        - No training phase required
+                        
+                        **Use When**: You have sufficient data and local similarity matters
                         """
                     }
                 else:
-                    # Regression models would go here
-                    pass
+                    st.markdown("**📈 Linear Regression Models Available:**")
+                    st.info("🎯 **Focus on Linear Models**: These models work best when the relationship between features and target is approximately linear. They provide excellent interpretability and are perfect for understanding feature impacts.")
+                    
+                    # Pure regression models - for continuous target prediction
+                    model_options = {
+                        "Linear Regression": LinearRegression(),
+                        "Ridge Regression": Ridge(alpha=1.0, random_state=42),
+                        "Lasso Regression": Lasso(alpha=1.0, random_state=42),
+                        "ElasticNet Regression": ElasticNet(alpha=1.0, l1_ratio=0.5, random_state=42)
+                    }
+                    
+                    # Justifications for regression models
+                    model_justifications = {
+                        "Linear Regression": """
+                        **Best for**: Interpretable baseline, linear relationships
+                        
+                        **Strengths**:
+                        - Highly interpretable coefficients
+                        - Fast training and prediction
+                        - No hyperparameters to tune
+                        - Clear feature impact understanding
+                        - Works well for linear relationships
+                        
+                        **Use When**: You need simple, explainable models with linear trends
+                        """,
+                        "Ridge Regression": """
+                        **Best for**: Handling multicollinearity, regularized linear models
+                        
+                        **Strengths**:
+                        - Prevents overfitting with L2 regularization
+                        - Handles correlated features well
+                        - Stable predictions with high-dimensional data
+                        - Maintains all features (shrinks coefficients)
+                        - Good bias-variance tradeoff
+                        
+                        **Use When**: You have many correlated features or risk of overfitting
+                        """,
+                        "Lasso Regression": """
+                        **Best for**: Feature selection, sparse models
+                        
+                        **Strengths**:
+                        - Automatic feature selection (L1 regularization)
+                        - Creates sparse models (some coefficients = 0)
+                        - Good for high-dimensional data
+                        - Removes irrelevant features automatically
+                        - Interpretable feature subset
+                        
+                        **Use When**: You want automatic feature selection and sparse models
+                        """,
+                        "ElasticNet Regression": """
+                        **Best for**: Balanced regularization, grouped features
+                        
+                        **Strengths**:
+                        - Combines Ridge and Lasso benefits
+                        - Balances feature selection and multicollinearity
+                        - More stable than Lasso for grouped features
+                        - Good for correlated feature groups
+                        - Tunable L1/L2 ratio parameter
+                        
+                        **Use When**: You have grouped correlated features and want balanced regularization
+                        """
+                    }
                 
-                # Let user select models to train
-                selected_models = []
-                for model_name, model_obj in model_options.items():
-                    if st.checkbox(f"Train {model_name}", model_name == "Random Forest"):  # Default to RF selected
-                        selected_models.append((model_name, model_obj))
+                # Enhanced Model Selection Interface
+                st.markdown("---")
+                
+                # Display model selection with enhanced UI
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    st.markdown("**Select Models to Train:**")
+                    selected_models = []
+                    
+                    # Create checkboxes for each model with better formatting
+                    for model_name, model_obj in model_options.items():
+                        # Default selection based on task type
+                        if st.session_state.is_classification:
+                            default_selected = (model_name == "Random Forest")
+                        else:
+                            default_selected = (model_name == "Linear Regression")
+                        
+                        if st.checkbox(
+                            f"🔹 Train {model_name}", 
+                            value=default_selected,
+                            help=f"Click to select {model_name} for training"
+                        ):
+                            selected_models.append((model_name, model_obj))
+                
+                with col2:
+                    if selected_models:
+                        st.markdown("**Selected Models:**")
+                        for model_name, _ in selected_models:
+                            st.markdown(f"✅ {model_name}")
+                        
+                        st.markdown(f"**Total: {len(selected_models)} models**")
+                    else:
+                        st.markdown("**No models selected**")
+                        st.warning("Please select at least one model")
+                
+                # Model Information Expander
+                if selected_models:
+                    with st.expander("📚 Learn About Your Selected Models", expanded=False):
+                        for model_name, _ in selected_models:
+                            if model_name in model_justifications:
+                                st.markdown(f"### {model_name}")
+                                st.markdown(model_justifications[model_name])
+                                st.markdown("---")
                 
                 # Option for hyperparameter tuning
                 st.markdown("#### Hyperparameter Tuning")
@@ -1265,33 +1498,52 @@ if st.session_state.data_loaded:
                             # Hyperparameter tuning if selected
                             if use_grid_search:
                                 # Define parameter grids for each model
-                                param_grids = {
-                                    "Random Forest": {
-                                        'n_estimators': [50, 100, 200],
-                                        'max_depth': [None, 10, 20],
-                                        'min_samples_split': [2, 5, 10]
-                                    },
-                                    "Gradient Boosting": {
-                                        'n_estimators': [50, 100, 200],
-                                        'learning_rate': [0.01, 0.1, 0.2],
-                                        'max_depth': [3, 5, 7]
-                                    },
-                                    "Logistic Regression": {
-                                        'C': [0.1, 1.0, 10.0],
-                                        'solver': ['liblinear', 'lbfgs']
-                                    },
-                                    "SVM": {
-                                        'C': [0.1, 1.0, 10.0],
-                                        'kernel': ['linear', 'rbf']
-                                    },
-                                    "K-Nearest Neighbors": {
-                                        'n_neighbors': [3, 5, 7, 9],
-                                        'weights': ['uniform', 'distance']
+                                if st.session_state.is_classification:
+                                    param_grids = {
+                                        "Random Forest": {
+                                            'n_estimators': [50, 100, 200],
+                                            'max_depth': [None, 10, 20],
+                                            'min_samples_split': [2, 5, 10]
+                                        },
+                                        "Gradient Boosting": {
+                                            'n_estimators': [50, 100, 200],
+                                            'learning_rate': [0.01, 0.1, 0.2],
+                                            'max_depth': [3, 5, 7]
+                                        },
+                                        "Logistic Regression": {
+                                            'C': [0.1, 1.0, 10.0],
+                                            'solver': ['liblinear', 'lbfgs']
+                                        },
+                                        "SVM": {
+                                            'C': [0.1, 1.0, 10.0],
+                                            'kernel': ['linear', 'rbf']
+                                        },
+                                        "K-Nearest Neighbors": {
+                                            'n_neighbors': [3, 5, 7, 9],
+                                            'weights': ['uniform', 'distance']
+                                        }
                                     }
-                                }
+                                else:
+                                    # Regression-specific parameter grids
+                                    param_grids = {
+                                        "Linear Regression": {
+                                            # Linear regression has no hyperparameters to tune
+                                        },
+                                        "Ridge Regression": {
+                                            'alpha': [0.1, 1.0, 10.0, 100.0]
+                                        },
+                                        "Lasso Regression": {
+                                            'alpha': [0.001, 0.01, 0.1, 1.0, 10.0]
+                                        },
+                                        "ElasticNet Regression": {
+                                            'alpha': [0.001, 0.01, 0.1, 1.0, 10.0],
+                                            'l1_ratio': [0.1, 0.3, 0.5, 0.7, 0.9]
+                                        }
+                                    }
                                 
                                 # Get appropriate grid for the model
-                                if model_name in param_grids:
+                                if model_name in param_grids and param_grids[model_name]:
+                                    # Only perform grid search if there are parameters to tune
                                     grid_search = GridSearchCV(
                                         model, param_grids[model_name], 
                                         cv=5, scoring='accuracy' if st.session_state.is_classification else 'neg_mean_squared_error',
@@ -1302,12 +1554,18 @@ if st.session_state.data_loaded:
                                     best_params = grid_search.best_params_
                                     best_score = grid_search.best_score_
                                     
-                                    st.write(f"Best parameters: {best_params}")
-                                    st.write(f"Cross-validation score: {best_score:.4f}")
+                                    st.write(f"✅ Best parameters: {best_params}")
+                                    if st.session_state.is_classification:
+                                        st.write(f"✅ Cross-validation accuracy: {best_score:.4f}")
+                                    else:
+                                        st.write(f"✅ Cross-validation RMSE: {np.sqrt(-best_score):.4f}")
                                     
                                     model = best_model
                                 else:
+                                    # No hyperparameters to tune (e.g., Linear Regression) or not in grid
                                     model.fit(X_train, y_train)
+                                    if model_name == "Linear Regression":
+                                        st.write("ℹ️ Linear Regression has no hyperparameters to tune")
                             else:
                                 model.fit(X_train, y_train)
                             
@@ -1332,8 +1590,23 @@ if st.session_state.data_loaded:
                                 
                                 st.write(f"Test Accuracy: {accuracy:.4f}")
                             else:
-                                # Regression metrics would go here
-                                pass
+                                # Regression metrics
+                                from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+                                
+                                mse = mean_squared_error(y_test, y_pred)
+                                rmse = np.sqrt(mse)
+                                mae = mean_absolute_error(y_test, y_pred)
+                                r2 = r2_score(y_test, y_pred)
+                                
+                                # Store results
+                                results.append({
+                                    'Model': model_name,
+                                    'RMSE': rmse,
+                                    'MAE': mae,
+                                    'R²': r2
+                                })
+                                
+                                st.write(f"RMSE: {rmse:.4f}, MAE: {mae:.4f}, R²: {r2:.4f}")
                                 
                             # Store the trained model
                             models[model_name] = model
@@ -1352,27 +1625,69 @@ if st.session_state.data_loaded:
                         st.markdown("#### Model Comparison")
                         results_df = pd.DataFrame(results)
                         
-                        if st.session_state.is_classification:
-                            # Sort by accuracy
-                            results_df = results_df.sort_values('Accuracy', ascending=False)
+                        # Check if we have any results
+                        if len(results_df) == 0:
+                            st.error("No models were successfully trained. Please check your data and try again.")
+                        else:
+                            if st.session_state.is_classification:
+                                # Sort by accuracy (higher is better)
+                                results_df = results_df.sort_values('Accuracy', ascending=False)
+                                
+                                # Visualize model comparison
+                                fig, ax = plt.subplots(figsize=(10, 6))
+                                sns.barplot(x='Model', y='Accuracy', data=results_df, ax=ax)
+                                ax.set_title('Model Accuracy Comparison')
+                                ax.set_ylim(max(0, results_df['Accuracy'].min() - 0.1), 1)
+                                plt.xticks(rotation=45, ha='right')
+                                st.pyplot(fig)
+                                
+                                best_metric = 'Accuracy'
+                                best_value = results_df.iloc[0]['Accuracy']
+                            else:
+                                # For regression, sort by R² (higher is better) as primary metric
+                                results_df = results_df.sort_values('R²', ascending=False)
+                                
+                                # Visualize model comparison for regression
+                                fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+                                
+                                # R² Score (higher is better)
+                                sns.barplot(x='Model', y='R²', data=results_df, ax=ax1)
+                                ax1.set_title('R² Score Comparison (Higher is Better)')
+                                ax1.tick_params(axis='x', rotation=45)
+                                
+                                # RMSE (lower is better)
+                                sns.barplot(x='Model', y='RMSE', data=results_df, ax=ax2)
+                                ax2.set_title('RMSE Comparison (Lower is Better)')
+                                ax2.tick_params(axis='x', rotation=45)
+                                
+                                # MAE (lower is better)
+                                sns.barplot(x='Model', y='MAE', data=results_df, ax=ax3)
+                                ax3.set_title('MAE Comparison (Lower is Better)')
+                                ax3.tick_params(axis='x', rotation=45)
+                                
+                                # Combined view - R² vs RMSE
+                                ax4.scatter(results_df['R²'], results_df['RMSE'])
+                                for i, model in enumerate(results_df['Model']):
+                                    ax4.annotate(model, (results_df.iloc[i]['R²'], results_df.iloc[i]['RMSE']))
+                                ax4.set_xlabel('R² Score')
+                                ax4.set_ylabel('RMSE')
+                                ax4.set_title('R² vs RMSE')
+                                
+                                plt.tight_layout()
+                                st.pyplot(fig)
+                                
+                                best_metric = 'R²'
+                                best_value = results_df.iloc[0]['R²']
                             
-                            # Visualize model comparison
-                            fig, ax = plt.subplots(figsize=(10, 6))
-                            sns.barplot(x='Model', y='Accuracy', data=results_df, ax=ax)
-                            ax.set_title('Model Accuracy Comparison')
-                            ax.set_ylim(max(0, results_df['Accuracy'].min() - 0.1), 1)
-                            plt.xticks(rotation=45, ha='right')
-                            st.pyplot(fig)
-                        
-                        # Select best model
-                        best_model_name = results_df.iloc[0]['Model']
-                        st.session_state.best_model_name = best_model_name
-                        st.session_state.best_model = models[best_model_name]
-                        
-                        st.markdown(f"**Best Model: {best_model_name}** with Accuracy: {results_df.iloc[0]['Accuracy']:.4f}")
-                        
-                        # Link to next tab
-                        st.info("✓ Proceed to the Evaluation tab for detailed model assessment")
+                            # Select best model only if we have results
+                            best_model_name = results_df.iloc[0]['Model']
+                            st.session_state.best_model_name = best_model_name
+                            st.session_state.best_model = models[best_model_name]
+                            
+                            st.markdown(f"**Best Model: {best_model_name}** with {best_metric}: {best_value:.4f}")
+                            
+                            # Link to next tab
+                            st.info("✓ Proceed to the Evaluation tab for detailed model assessment")
                 
                 # Show model results if models are trained
                 if 'models_trained' in st.session_state and st.session_state.models_trained:
@@ -1385,7 +1700,7 @@ if st.session_state.data_loaded:
                         for key in ['model_results', 'trained_models', 'models_trained', 'best_model_name', 'best_model']:
                             if key in st.session_state:
                                 del st.session_state[key]
-                        st.experimental_rerun()
+                        st.rerun()
                     
                     # Display justification for best model
                     if st.session_state.best_model_name in model_justifications:
@@ -1409,8 +1724,13 @@ if st.session_state.data_loaded:
                 best_model = st.session_state.best_model
                 best_model_name = st.session_state.best_model_name
                 
-                # Create tabs for different evaluation aspects
-                eval_tabs = st.tabs(["Performance Metrics", "Confusion Matrix", "ROC & PR Curves", "Feature Importance", "Insights & Recommendations"])
+                # Create tabs for different evaluation aspects - with appropriate names based on model type
+                if st.session_state.is_classification:
+                    # Classification-appropriate tab names
+                    eval_tabs = st.tabs(["Performance Metrics", "Confusion Matrix", "ROC & PR Curves", "Feature Importance", "Insights & Recommendations"])
+                else:
+                    # Regression-appropriate tab names
+                    eval_tabs = st.tabs(["Performance Metrics", "Prediction Analysis", "Regression Diagnostics", "Feature Importance", "Insights & Recommendations"])
                 
                 # Tab 1: Performance Metrics
                 with eval_tabs[0]:
@@ -1455,8 +1775,142 @@ if st.session_state.data_loaded:
                         - Classes with low recall may need more training examples or different model architecture
                         """)
                     else:
-                        # Regression metrics would go here
-                        pass
+                        # Regression metrics for linear models
+                        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, explained_variance_score
+                        
+                        # Calculate regression metrics
+                        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+                        mae = mean_absolute_error(y_test, y_pred)
+                        r2 = r2_score(y_test, y_pred)
+                        explained_var = explained_variance_score(y_test, y_pred)
+                        
+                        # Display metrics in columns
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.metric("R² Score", f"{r2:.4f}", help="Proportion of variance explained by the model (1.0 is perfect)")
+                            st.metric("RMSE", f"{rmse:.4f}", help="Root Mean Squared Error (lower is better)")
+                            
+                        with col2:
+                            st.metric("MAE", f"{mae:.4f}", help="Mean Absolute Error (lower is better)")
+                            st.metric("Explained Variance", f"{explained_var:.4f}", help="Explained variance (1.0 is perfect)")
+                        
+                        # Show regression equation if it's a linear model with coefficients
+                        if hasattr(best_model, 'coef_'):
+                            st.markdown("#### Linear Regression Equation")
+                            
+                            # Get feature names and coefficients
+                            feature_names = X_test.columns.tolist() if isinstance(X_test, pd.DataFrame) else [f"Feature {i}" for i in range(X_test.shape[1])]
+                            coefficients = best_model.coef_
+                            intercept = best_model.intercept_
+                            
+                            # Format equation
+                            equation = f"y = {intercept:.4f}"
+                            for name, coef in zip(feature_names, coefficients):
+                                sign = '+' if coef >= 0 else ''
+                                equation += f" {sign} {coef:.4f} × {name}"
+                            
+                            st.code(equation)
+                            
+                            st.markdown("""
+                            **How to interpret your linear regression model:**
+                            
+                            - **R² Score**: Measures how well the model explains the variance in the data
+                              - Values close to 1.0 indicate a good fit
+                              - Values close to 0 indicate the model doesn't explain much variance
+                            
+                            - **RMSE (Root Mean Squared Error)**: Average prediction error in the same units as the target variable
+                              - Penalizes larger errors more due to squaring
+                              - Good for applications where outliers are particularly undesirable
+                            
+                            - **MAE (Mean Absolute Error)**: Average absolute prediction error
+                              - Easier to interpret as it's in the same units as the target
+                              - Less sensitive to outliers than RMSE
+                            
+                            - **Coefficients**: Show how much the target changes per unit increase in each feature
+                              - Positive coefficients indicate positive relationships
+                              - Negative coefficients indicate inverse relationships
+                              - Larger absolute values indicate stronger effects
+                            """)
+                            
+                            # Calculate standardized coefficients for better comparison
+                            if isinstance(X_test, pd.DataFrame):
+                                # Compute standard deviations of features
+                                X_std = X_test.std()
+                                y_std = y_test.std() if isinstance(y_test, pd.Series) else np.std(y_test)
+                                
+                                # Calculate standardized coefficients
+                                std_coef = coefficients * (X_std / y_std)
+                                
+                                # Create DataFrame for comparison
+                                coef_df = pd.DataFrame({
+                                    'Feature': feature_names,
+                                    'Coefficient': coefficients,
+                                    'Standardized Coefficient': std_coef
+                                }).sort_values('Standardized Coefficient', key=abs, ascending=False)
+                                
+                                st.markdown("#### Standardized Coefficients")
+                                st.markdown("Standardized coefficients allow direct comparison of feature importance regardless of scale:")
+                                st.dataframe(coef_df.style.format({
+                                    'Coefficient': "{:.4f}",
+                                    'Standardized Coefficient': "{:.4f}"
+                                }).background_gradient(cmap='coolwarm', subset=['Standardized Coefficient']))
+                        
+                        # Residual analysis
+                        st.markdown("#### Residual Analysis")
+                        residuals = y_test - y_pred
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # Residual plot
+                            fig, ax = plt.subplots(figsize=(8, 6))
+                            ax.scatter(y_pred, residuals)
+                            ax.axhline(y=0, color='r', linestyle='-')
+                            ax.set_xlabel('Predicted Values')
+                            ax.set_ylabel('Residuals')
+                            ax.set_title('Residual Plot')
+                            st.pyplot(fig)
+                            
+                        with col2:
+                            # QQ Plot for normality check
+                            fig, ax = plt.subplots(figsize=(8, 6))
+                            import scipy.stats as stats
+                            stats.probplot(residuals, dist="norm", plot=ax)
+                            ax.set_title('Q-Q Plot for Residuals')
+                            st.pyplot(fig)
+                        
+                        # Residual distribution
+                        fig, ax = plt.subplots(figsize=(10, 6))
+                        sns.histplot(residuals, kde=True, ax=ax)
+                        ax.axvline(x=0, color='r', linestyle='--')
+                        ax.set_title('Residual Distribution')
+                        st.pyplot(fig)
+                        
+                        st.markdown("""
+                        **Residual Analysis Interpretation:**
+                        
+                        1. **Residual Plot**: 
+                           - Look for random scatter around the zero line
+                           - Patterns suggest the model is missing something
+                           - Funnel shapes indicate heteroscedasticity (non-constant variance)
+                        
+                        2. **Q-Q Plot**: 
+                           - Points following diagonal line suggest normally distributed residuals
+                           - Deviations suggest non-normality
+                           - S-shapes indicate skewness or heavy tails
+                        
+                        3. **Residual Distribution**:
+                           - Should be approximately normal, centered at zero
+                           - Skewness might indicate missing predictors or transformations needed
+                        
+                        **What Makes a Good Linear Regression Model:**
+                        - Residuals randomly scattered around zero
+                        - High R² value (close to 1)
+                        - Low RMSE and MAE relative to the scale of your target
+                        - Normally distributed residuals
+                        - No systematic patterns in residuals
+                        """)
                 
                 # Tab 2: Confusion Matrix
                 with eval_tabs[1]:
@@ -1534,10 +1988,96 @@ if st.session_state.data_loaded:
                                     for (actual, pred), count in misclassification_counts.iloc[:5].items():
                                         st.write(f"- True: {actual}, Predicted: {pred} - {count} times")
                     else:
-                        # Regression error analysis would go here
-                        pass
+                        # Regression error analysis and visualization
+                        st.markdown("#### Predicted vs Actual Values")
+                        
+                        # Create scatter plot of predicted vs actual
+                        fig, ax = plt.subplots(figsize=(10, 8))
+                        ax.scatter(y_test, y_pred, alpha=0.6)
+                        
+                        # Add perfect prediction line
+                        min_val = min(y_test.min(), y_pred.min())
+                        max_val = max(y_test.max(), y_pred.max())
+                        ax.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2)
+                        
+                        ax.set_xlabel('Actual Values')
+                        ax.set_ylabel('Predicted Values')
+                        ax.set_title('Predicted vs Actual Values')
+                        
+                        # Add R² annotation to plot
+                        r2 = r2_score(y_test, y_pred)
+                        ax.annotate(f'R² = {r2:.4f}', 
+                                   xy=(0.05, 0.95), xycoords='axes fraction',
+                                   bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8),
+                                   fontsize=12)
+                        
+                        st.pyplot(fig)
+                        
+                        # Error distribution analysis
+                        st.markdown("#### Error Analysis")
+                        
+                        # Calculate errors
+                        errors = y_test - y_pred
+                        abs_errors = np.abs(errors)
+                        
+                        # Error statistics
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Mean Error", f"{np.mean(errors):.4f}")
+                        with col2:
+                            st.metric("Median Error", f"{np.median(errors):.4f}")
+                        with col3:
+                            st.metric("Error Std Dev", f"{np.std(errors):.4f}")
+                        
+                        # Error percentiles
+                        percentiles = [25, 50, 75, 90, 95, 99]
+                        error_percentiles = np.percentile(abs_errors, percentiles)
+                        
+                        error_df = pd.DataFrame({
+                            'Percentile': [f"{p}%" for p in percentiles],
+                            'Absolute Error': error_percentiles
+                        })
+                        
+                        st.markdown("**Error Percentiles**")
+                        st.markdown("This table shows the distribution of absolute errors:")
+                        st.table(error_df.style.format({'Absolute Error': '{:.4f}'}))
+                        
+                        # Error distribution chart
+                        st.markdown("**Error Distribution**")
+                        
+                        fig, ax = plt.subplots(figsize=(10, 6))
+                        sns.histplot(errors, bins=30, kde=True, ax=ax)
+                        ax.axvline(0, color='red', linestyle='--', alpha=0.8)
+                        ax.set_title('Error Distribution')
+                        ax.set_xlabel('Error (Actual - Predicted)')
+                        st.pyplot(fig)
+                        
+                        st.markdown("""
+                        **Interpreting the Error Analysis:**
+                        
+                        1. **Predicted vs Actual Plot**:
+                           - Points close to the diagonal line indicate good predictions
+                           - Points above the line are underestimations
+                           - Points below the line are overestimations
+                           - Patterns may indicate non-linear relationships not captured by the model
+                        
+                        2. **Error Statistics**:
+                           - Mean Error close to zero suggests unbiased predictions
+                           - Large standard deviation indicates high prediction variability
+                           - Error percentiles help understand the distribution of errors
+                        
+                        3. **Error Distribution**:
+                           - Should be normally distributed around zero
+                           - Skewness may indicate bias in predictions for certain ranges
+                        
+                        **Actionable Insights:**
+                        - If errors increase with predicted values, consider logarithmic transformations
+                        - If the model consistently over/under-predicts, review feature selection
+                        - Consider removing outliers if they disproportionately impact predictions
+                        - For non-linear patterns, try polynomial features or more complex models
+                        """)
                 
-                # Tab 3: ROC & PR Curves
+                # Tab 3: ROC & PR Curves for Classification / Regression Diagnostics for Regression
                 with eval_tabs[2]:
                     if st.session_state.is_classification:
                         st.markdown("#### ROC and Precision-Recall Curves")
@@ -1627,8 +2167,193 @@ if st.session_state.data_loaded:
                                 st.info("ROC and PR curves are shown for binary classification. For multi-class problems, these curves would be calculated per class (one-vs-rest).")
                                 
                     else:
-                        # Regression evaluation plots would go here
-                        pass
+                        # Regression advanced diagnostics
+                        st.markdown("#### Linear Regression Model Diagnostics")
+                        
+                        # Calculate residuals
+                        y_pred = best_model.predict(X_test)
+                        residuals = y_test - y_pred
+                        
+                        # Advanced regression diagnostics - Cook's distance
+                        st.markdown("##### Influential Points Analysis")
+                        
+                        # Get feature names
+                        X_cols = X_test.columns if isinstance(X_test, pd.DataFrame) else None
+                        
+                        try:
+                            # Only compute for linear models with reasonable dataset size
+                            if X_test.shape[0] < 10000:
+                                # Compute Cook's distance
+                                from statsmodels.stats.outliers_influence import OLSInfluence
+                                import statsmodels.api as sm
+                                
+                                # Prepare data for statsmodels
+                                X_with_const = sm.add_constant(X_test) if isinstance(X_test, pd.DataFrame) else sm.add_constant(X_test)
+                                
+                                # Fit the model
+                                model = sm.OLS(y_test, X_with_const).fit()
+                                
+                                # Calculate influence metrics
+                                influence = OLSInfluence(model)
+                                cooks_d = influence.cooks_distance[0]
+                                
+                                # Plot Cook's distance
+                                fig, ax = plt.subplots(figsize=(10, 6))
+                                ax.stem(cooks_d, markerfmt=",")
+                                ax.set_title('Cook\'s Distance - Influential Points')
+                                ax.set_xlabel('Observation Index')
+                                ax.set_ylabel('Cook\'s Distance')
+                                
+                                # Add threshold line (4/n is common)
+                                threshold = 4/len(X_test)
+                                ax.axhline(y=threshold, color='red', linestyle='--')
+                                ax.text(len(cooks_d)*0.9, threshold*1.1, f'Threshold: {threshold:.4f}', 
+                                       color='red', ha='right')
+                                
+                                st.pyplot(fig)
+                                
+                                # Find influential points
+                                influential_points = np.where(cooks_d > threshold)[0]
+                                if len(influential_points) > 0:
+                                    st.markdown(f"**{len(influential_points)} influential points detected** that may disproportionately affect model fit.")
+                                    st.markdown("Consider reviewing these points and potentially treating them as outliers.")
+                                else:
+                                    st.success("No highly influential points detected.")
+                                    
+                            else:
+                                st.info("Influence diagnostics skipped due to large dataset size (>10,000 rows).")
+                                
+                        except Exception as e:
+                            st.warning(f"Could not compute influence metrics: {str(e)}")
+                            st.info("This analysis is best suited for pure linear regression models with moderate dataset sizes.")
+                        
+                        # Heteroscedasticity test
+                        st.markdown("##### Heteroscedasticity Analysis")
+                        st.markdown("Testing if residual variance is constant across predicted values:")
+                        
+                        try:
+                            import statsmodels.stats.api as sms
+                            from statsmodels.compat import lzip
+                            
+                            # Prepare data for test
+                            X_with_const = sm.add_constant(X_test) if isinstance(X_test, pd.DataFrame) else sm.add_constant(X_test)
+                            
+                            # Breusch-Pagan test
+                            bp_test = sms.het_breuschpagan(residuals, X_with_const)
+                            bp_labels = ['LM Statistic', 'LM p-value', 'F Statistic', 'F p-value']
+                            
+                            # Create test results
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.markdown("**Breusch-Pagan Test for Heteroscedasticity**")
+                                bp_result = pd.DataFrame({
+                                    'Metric': bp_labels,
+                                    'Value': bp_test
+                                })
+                                st.dataframe(bp_result.style.format({'Value': '{:.4f}'}))
+                                
+                                # Interpret the test
+                                if bp_test[1] < 0.05:
+                                    st.warning("⚠️ **Heteroscedasticity detected** (p < 0.05)")
+                                    st.markdown("This suggests that residuals have non-constant variance, which can affect standard errors.")
+                                else:
+                                    st.success("✅ No significant heteroscedasticity detected (p > 0.05)")
+                            
+                            with col2:
+                                # Scale-Location plot
+                                standardized_residuals = residuals / np.sqrt(np.mean(residuals**2))
+                                fig, ax = plt.subplots(figsize=(8, 6))
+                                ax.scatter(y_pred, np.sqrt(np.abs(standardized_residuals)))
+                                
+                                # Add smoothed line
+                                try:
+                                    from scipy.stats import loess
+                                    # Only attempt LOESS if supported and dataset is reasonable size
+                                    if len(y_pred) < 1000:
+                                        sorted_indices = np.argsort(y_pred)
+                                        sorted_x = y_pred[sorted_indices]
+                                        sorted_y = np.sqrt(np.abs(standardized_residuals))[sorted_indices]
+                                        loess_result = loess(sorted_x, sorted_y)
+                                        loess_result.fit()
+                                        pred = loess_result.predict(sorted_x)
+                                        ax.plot(sorted_x, pred, color='red', linewidth=2)
+                                except:
+                                    # Fallback if LOESS fails
+                                    z = np.polyfit(y_pred, np.sqrt(np.abs(standardized_residuals)), 1)
+                                    p = np.poly1d(z)
+                                    ax.plot(np.sort(y_pred), p(np.sort(y_pred)), "r--", linewidth=2)
+                                
+                                ax.set_title('Scale-Location Plot')
+                                ax.set_xlabel('Fitted Values')
+                                ax.set_ylabel('Sqrt of |Standardized Residuals|')
+                                st.pyplot(fig)
+                                
+                        except Exception as e:
+                            st.warning(f"Could not perform heteroscedasticity test: {str(e)}")
+                        
+                        # Linearity assessment - Component + Residual plots
+                        if isinstance(X_test, pd.DataFrame) and hasattr(best_model, 'coef_'):
+                            st.markdown("##### Linearity Assessment: Component + Residual Plots")
+                            st.markdown("These plots help identify non-linear relationships between predictors and the target:")
+                            
+                            # Get top features by coefficient magnitude
+                            coef_importance = np.abs(best_model.coef_)
+                            top_features_idx = np.argsort(-coef_importance)[:min(4, len(X_cols))]
+                            top_features = [X_cols[i] for i in top_features_idx]
+                            
+                            # Create component-residual plots
+                            fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+                            axes = axes.flatten()
+                            
+                            for i, feature in enumerate(top_features):
+                                if i < 4:  # Only show up to 4 features
+                                    # Component + residual calculation
+                                    x = X_test[feature]
+                                    coef = best_model.coef_[list(X_cols).index(feature)]
+                                    component = coef * x
+                                    comp_plus_resid = component + residuals
+                                    
+                                    # Plot
+                                    axes[i].scatter(x, comp_plus_resid, alpha=0.6)
+                                    
+                                    # Add regression line
+                                    z = np.polyfit(x, comp_plus_resid, 1)
+                                    p = np.poly1d(z)
+                                    axes[i].plot(np.sort(x), p(np.sort(x)), "r-", linewidth=2)
+                                    
+                                    # Add loess curve to detect non-linearity
+                                    try:
+                                        from scipy.stats import loess
+                                        if len(x) < 1000:  # Only for reasonable size
+                                            sorted_indices = np.argsort(x)
+                                            sorted_x = x.iloc[sorted_indices] if hasattr(x, 'iloc') else x[sorted_indices]
+                                            sorted_y = comp_plus_resid.iloc[sorted_indices] if hasattr(comp_plus_resid, 'iloc') else comp_plus_resid[sorted_indices]
+                                            loess_result = loess(sorted_x, sorted_y)
+                                            loess_result.fit()
+                                            pred = loess_result.predict(sorted_x)
+                                            axes[i].plot(sorted_x, pred, "g--", linewidth=1.5, label="LOESS")
+                                    except:
+                                        pass
+                                    
+                                    axes[i].set_title(f'Component + Residual Plot: {feature}')
+                                    axes[i].set_xlabel(feature)
+                                    axes[i].set_ylabel('Component + Residual')
+                                    axes[i].grid(True, alpha=0.3)
+                            
+                            plt.tight_layout()
+                            st.pyplot(fig)
+                            
+                            st.markdown("""
+                            **How to interpret Component + Residual Plots:**
+                            
+                            - **Linear relationship**: Points will follow the linear regression line
+                            - **Non-linear relationship**: Points will show a pattern deviating from the line
+                            - **Curved pattern**: Consider adding polynomial terms or transformations for this feature
+                            - **Fan shapes**: May indicate heteroscedasticity or interaction effects
+                            
+                            If the green LOESS curve deviates significantly from the red linear fit,
+                            consider non-linear transformations of the feature.
+                            """)
                 
                 # Tab 4: Feature Importance
                 with eval_tabs[3]:
@@ -1811,47 +2536,172 @@ if st.session_state.data_loaded:
                         except:
                             pass
                     else:
-                        # Regression metrics would go here
-                        pass
+                        # Regression metrics
+                        y_pred = best_model.predict(X_test)
+                        
+                        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+                        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+                        mae = mean_absolute_error(y_test, y_pred)
+                        r2 = r2_score(y_test, y_pred)
+                        
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("Best Model", best_model_name)
+                        col2.metric("R² Score", f"{r2:.4f}", 
+                                   help="Proportion of variance explained by the model. Higher is better.")
+                        col3.metric("RMSE", f"{rmse:.4f}",
+                                  help="Root Mean Squared Error. Lower is better.")
+                        
+                        # Show regression equation if it's a linear model
+                        if hasattr(best_model, 'coef_'):
+                            feature_names = X_test.columns.tolist() if isinstance(X_test, pd.DataFrame) else [f"X{i}" for i in range(X_test.shape[1])]
+                            
+                            # Get most significant terms
+                            coeffs = best_model.coef_
+                            intercept = best_model.intercept_
+                            
+                            # Sort by absolute coefficient value
+                            coef_importance = pd.DataFrame({
+                                'Feature': feature_names,
+                                'Coefficient': coeffs
+                            }).sort_values('Coefficient', key=abs, ascending=False)
+                            
+                            st.markdown("#### Model Equation (Top 5 Terms)")
+                            
+                            # Display simplified equation with top 5 terms
+                            equation = f"y = {intercept:.4f}"
+                            for i, row in coef_importance.head(5).iterrows():
+                                feature = row['Feature']
+                                coef = row['Coefficient']
+                                sign = "+" if coef >= 0 else ""
+                                equation += f" {sign} {coef:.4f} × {feature}"
+                            
+                            if len(coef_importance) > 5:
+                                equation += " + ..."
+                                
+                            st.code(equation)
                     
                     # Business Insights
-                    st.markdown("""
-                    #### Key Business Insights
+                    if st.session_state.is_classification:
+                        st.markdown("""
+                        #### Key Business Insights for Classification
+                        
+                        1. **Model Effectiveness**: The model achieves good predictive performance, demonstrating the feasibility of using machine learning for this type of classification problem.
+                        
+                        2. **Feature Importance**: The analysis identifies the most influential factors in making predictions, providing actionable intelligence for decision-makers.
+                        
+                        3. **Data Quality Impact**: The preprocessing steps significantly improved model performance, highlighting the importance of proper data preparation.
+                        
+                        4. **Model Selection**: Multiple algorithms were systematically evaluated to find the most effective classification approach, ensuring optimal performance.
+                        
+                        5. **Performance Trade-offs**: Different evaluation metrics show the balance between precision and recall, allowing business-appropriate threshold selection.
+                        """)
+                    else:
+                        st.markdown("""
+                        #### Key Business Insights for Linear Regression
+                        
+                        1. **Predictive Accuracy**: The model explains a significant portion of the variance in the target variable, allowing for reliable predictions of continuous outcomes.
+                        
+                        2. **Key Drivers Identified**: The coefficient analysis reveals which factors most strongly influence the target variable, providing clear direction for business decision-making.
+                        
+                        3. **Quantified Relationships**: The linear equation shows exactly how changes in input variables affect the predicted outcome, enabling what-if scenario analysis.
+                        
+                        4. **Model Robustness**: Residual analysis confirms the model's reliability and helps identify any conditions where predictions might be less accurate.
+                        
+                        5. **Optimization Opportunities**: Understanding the strongest predictors helps identify where small changes might yield the largest improvements in the target metric.
+                        
+                        6. **ROI Calculation**: With a quantified model, the business can calculate expected returns on investments that affect the key input variables.
+                        """)
                     
-                    1. **Model Effectiveness**: The model achieves good predictive performance, demonstrating the feasibility of using machine learning for this type of prediction problem.
+                    # Add model quality assessment based on metrics
+                    st.markdown("#### Model Quality Assessment")
                     
-                    2. **Feature Importance**: The analysis identifies the most influential factors in making predictions, providing actionable intelligence for decision-makers.
-                    
-                    3. **Data Quality Impact**: The preprocessing steps significantly improved model performance, highlighting the importance of proper data preparation.
-                    
-                    4. **Model Selection**: Multiple algorithms were systematically evaluated to find the most effective approach, ensuring optimal performance.
-                    
-                    5. **Performance Trade-offs**: Different evaluation metrics show the balance between precision and recall, allowing business-appropriate threshold selection.
-                    """)
+                    if st.session_state.is_classification:
+                        # For classification, assess based on accuracy/AUC
+                        accuracy = accuracy_score(y_test, y_pred)
+                        
+                        if accuracy >= 0.9:
+                            quality = "Excellent"
+                            quality_color = "green"
+                        elif accuracy >= 0.8:
+                            quality = "Good"
+                            quality_color = "lightgreen"
+                        elif accuracy >= 0.7:
+                            quality = "Moderate"
+                            quality_color = "orange"
+                        else:
+                            quality = "Needs Improvement"
+                            quality_color = "red"
+                            
+                        st.markdown(f"**Model Quality Rating**: :{quality_color}[{quality}] (Accuracy: {accuracy:.2%})")
+                        
+                    else:
+                        # For regression, assess based on R²
+                        if r2 >= 0.8:
+                            quality = "Excellent"
+                            quality_color = "green"
+                        elif r2 >= 0.6:
+                            quality = "Good"
+                            quality_color = "lightgreen"
+                        elif r2 >= 0.4:
+                            quality = "Moderate"
+                            quality_color = "orange"
+                        else:
+                            quality = "Needs Improvement"
+                            quality_color = "red"
+                            
+                        st.markdown(f"**Model Quality Rating**: :{quality_color}[{quality}] (R² Score: {r2:.2f})")
                     
                     # Recommendations
-                    st.markdown("""
-                    #### Recommendations for Improvement
-                    
-                    1. **Data Collection**:
-                       - Gather more training examples, especially for underrepresented classes
-                       - Consider collecting additional features identified as potentially valuable
-                       
-                    2. **Feature Engineering**:
-                       - Focus on improving the top predictive features identified
-                       - Create interaction features between highly correlated variables
-                       - Consider domain-specific transformations for key features
-                       
-                    3. **Model Optimization**:
-                       - Fine-tune hyperparameters with more extensive grid search
-                       - Consider ensemble methods combining multiple models
-                       - Explore deep learning approaches for more complex patterns
-                       
-                    4. **Deployment Considerations**:
-                       - Implement regular model retraining to adapt to changing patterns
-                       - Monitor for concept drift and performance degradation
-                       - Create interpretability layer for non-technical stakeholders
-                    """)
+                    if st.session_state.is_classification:
+                        st.markdown("""
+                        #### Recommendations for Classification Model Improvement
+                        
+                        1. **Data Collection**:
+                           - Gather more training examples, especially for underrepresented classes
+                           - Consider collecting additional features identified as potentially valuable
+                           
+                        2. **Feature Engineering**:
+                           - Focus on improving the top predictive features identified
+                           - Create interaction features between highly correlated variables
+                           - Consider domain-specific transformations for key features
+                           
+                        3. **Model Optimization**:
+                           - Fine-tune hyperparameters with more extensive grid search
+                           - Consider ensemble methods combining multiple models
+                           - Explore deep learning approaches for more complex patterns
+                           
+                        4. **Deployment Considerations**:
+                           - Implement regular model retraining to adapt to changing patterns
+                           - Monitor for concept drift and performance degradation
+                           - Create interpretability layer for non-technical stakeholders
+                        """)
+                    else:
+                        st.markdown("""
+                        #### Recommendations for Linear Regression Model Improvement
+                        
+                        1. **Data Enhancement**:
+                           - Collect data with greater variation in key predictors
+                           - Address outliers identified in residual analysis
+                           - Fill missing values with more sophisticated techniques if applicable
+                           
+                        2. **Model Refinement**:
+                           - Consider polynomial features if component-residual plots showed non-linearity
+                           - Try variable transformations (log, sqrt, etc.) for features with skewed distributions
+                           - Investigate regularization strength (alpha parameter) if using Ridge/Lasso
+                           - Consider weighted regression if heteroscedasticity is significant
+                           
+                        3. **Feature Engineering**:
+                           - Create interaction terms between related variables
+                           - Transform features to address non-linear relationships
+                           - Feature selection to retain only significant predictors (p < 0.05)
+                           - Normalize/standardize features for better coefficient interpretation
+                           
+                        4. **Business Applications**:
+                           - Create simpler models with just the top predictors for business users
+                           - Develop what-if calculators based on the regression equation
+                           - Translate coefficients into actionable business recommendations
+                           - Set up monitoring for variables with the largest coefficients
+                        """)
                     
                     # Export model options
                     st.markdown("#### Export Options")
@@ -1887,5 +2737,438 @@ if st.session_state.data_loaded:
                         with open('preprocessing_pipeline.pkl', 'wb') as file:
                             pickle.dump(preprocessing_pipeline, file)
                         """)
+        
+        # Tab 5: Make Predictions
+        with ml_tabs[4]:
+            st.markdown("### 🔮 Make Real-Time Predictions")
+            
+            if 'best_model' not in st.session_state or st.session_state.best_model is None:
+                st.warning("⚠️ Please train a model first in the 'Model Selection & Training' tab")
+            else:
+                best_model = st.session_state.best_model
+                best_model_name = st.session_state.best_model_name
+                
+                st.success(f"✅ Using trained model: **{best_model_name}**")
+                
+                # Get feature information for input
+                if 'X_train_processed' in st.session_state:
+                    feature_names = st.session_state.X_train_processed.columns.tolist()
+                    feature_count = len(feature_names)
+                    
+                    st.markdown(f"**Enter values for {feature_count} features:**")
+                    
+                    # Check if there's a pending example prediction
+                    if 'prediction_example' in st.session_state:
+                        st.info(f"Using {st.session_state.prediction_example} values as starting points. You can adjust them as needed.")
+                    
+                    # Create input form
+                    with st.form("prediction_form"):
+                        st.markdown("#### 📝 Input Feature Values")
+                        
+                        # Organize inputs in columns for better UX
+                        cols_per_row = 3
+                        cols = st.columns(cols_per_row)
+                        
+                        user_inputs = {}
+                        
+                        # Get reference statistics for smart defaults
+                        X_train = st.session_state.X_train_processed
+                        
+                        for i, feature in enumerate(feature_names):
+                            col_idx = i % cols_per_row
+                            
+                            with cols[col_idx]:
+                                # Get feature statistics for smart defaults and validation
+                                feature_min = float(X_train[feature].min())
+                                feature_max = float(X_train[feature].max())
+                                feature_mean = float(X_train[feature].mean())
+                                feature_std = float(X_train[feature].std())
+                                
+                                # Create input with helpful information
+                                help_text = f"Training data range: [{feature_min:.2f}, {feature_max:.2f}]\nMean: {feature_mean:.2f} ± {feature_std:.2f}"
+                                
+                                # Calculate reasonable step size
+                                step_size = feature_std/10 if feature_std > 0 else 0.1
+                                
+                                # Check if this appears to be a large-scale feature (like house square footage)
+                                is_large_scale = feature_max > 1000 or abs(feature_mean) > 1000
+                                
+                                # Set default value based on prediction_example session state if present
+                                if 'prediction_example' in st.session_state:
+                                    if st.session_state.prediction_example == "average":
+                                        default_value = feature_mean
+                                    elif st.session_state.prediction_example == "high":
+                                        default_value = X_train[feature].quantile(0.9)  # Use 90th percentile
+                                    elif st.session_state.prediction_example == "low":
+                                        default_value = X_train[feature].quantile(0.1)  # Use 10th percentile
+                                    else:
+                                        default_value = feature_mean
+                                else:
+                                    default_value = feature_mean
+                                
+                                # For large scale features, don't use restrictive min/max
+                                if is_large_scale:
+                                    user_inputs[feature] = st.number_input(
+                                        f"**{feature}**",
+                                        value=default_value,
+                                        step=max(1.0, step_size),  # Ensure reasonable step size for large values
+                                        help=help_text + "\n\nYou can enter values outside the training range.",
+                                        format="%.2f" if is_large_scale else "%.4f"
+                                    )
+                                else:
+                                    # For normal-scale features, use expanded ranges but still have some limits
+                                    # Use 5x the range of the training data as the limits
+                                    range_width = feature_max - feature_min
+                                    user_inputs[feature] = st.number_input(
+                                        f"**{feature}**",
+                                        min_value=feature_min - 2*range_width if feature_min != feature_max else None,
+                                        max_value=feature_max + 2*range_width if feature_min != feature_max else None,
+                                        value=default_value,
+                                        step=step_size,
+                                        help=help_text,
+                                        format="%.4f"
+                                    )
+                        
+                        # Prediction button
+                        col1, col2, col3 = st.columns([1, 2, 1])
+                        with col2:
+                            predict_button = st.form_submit_button(
+                                "🎯 Make Prediction", 
+                                use_container_width=True,
+                                type="primary"
+                            )
+                            
+                        # Reset prediction_example after form has been rendered
+                        if 'prediction_example' in st.session_state:
+                            # We've used it to populate the form, now remove it
+                            del st.session_state.prediction_example
+                        
+                        if predict_button:
+                            # Prepare input data
+                            input_data = np.array([[user_inputs[feature] for feature in feature_names]])
+                            input_df = pd.DataFrame(input_data, columns=feature_names)
+                            
+                            # Make prediction
+                            try:
+                                prediction = best_model.predict(input_data)[0]
+                                
+                                # Display results based on task type
+                                st.markdown("---")
+                                st.markdown("### 🎯 Prediction Results")
+                                
+                                if st.session_state.is_classification:
+                                    # Classification prediction
+                                    col1, col2 = st.columns([1, 1])
+                                    
+                                    with col1:
+                                        st.markdown("#### Predicted Class")
+                                        st.success(f"**Class: {prediction}**")
+                                    
+                                    with col2:
+                                        # Try to get prediction probabilities
+                                        try:
+                                            probabilities = best_model.predict_proba(input_data)[0]
+                                            classes = best_model.classes_
+                                            
+                                            st.markdown("#### Class Probabilities")
+                                            
+                                            # Create probability DataFrame
+                                            prob_df = pd.DataFrame({
+                                                'Class': classes,
+                                                'Probability': probabilities
+                                            }).sort_values('Probability', ascending=False)
+                                            
+                                            # Display as a bar chart
+                                            fig, ax = plt.subplots(figsize=(8, 4))
+                                            sns.barplot(x='Probability', y='Class', data=prob_df, ax=ax)
+                                            ax.set_title('Class Probabilities')
+                                            ax.set_xlim(0, 1)
+                                            
+                                            # Add percentage labels
+                                            for i, (_, row) in enumerate(prob_df.iterrows()):
+                                                ax.text(row['Probability'] + 0.01, i, f'{row["Probability"]:.2%}', 
+                                                       va='center', fontweight='bold')
+                                            
+                                            st.pyplot(fig)
+                                            
+                                            # Show confidence level
+                                            max_prob = probabilities.max()
+                                            if max_prob > 0.8:
+                                                confidence = "High"
+                                                confidence_color = "green"
+                                            elif max_prob > 0.6:
+                                                confidence = "Medium"
+                                                confidence_color = "orange"
+                                            else:
+                                                confidence = "Low"
+                                                confidence_color = "red"
+                                            
+                                            st.markdown(f"**Confidence Level:** :{confidence_color}[{confidence}] ({max_prob:.2%})")
+                                            
+                                        except:
+                                            st.info("Probability estimates not available for this model")
+                                            
+                                else:
+                                    # Regression prediction
+                                    st.markdown("#### Predicted Value")
+                                    st.success(f"**Prediction: {prediction:.4f}**")
+                                    
+                                    # Try to provide prediction interval (for some models)
+                                    try:
+                                        # For tree-based models, we can estimate uncertainty using individual tree predictions
+                                        if hasattr(best_model, 'estimators_'):
+                                            tree_predictions = np.array([tree.predict(input_data)[0] for tree in best_model.estimators_])
+                                            std_dev = np.std(tree_predictions)
+                                            
+                                            lower_bound = prediction - 2*std_dev
+                                            upper_bound = prediction + 2*std_dev
+                                            
+                                            st.markdown("#### Prediction Interval (95% confidence)")
+                                            st.info(f"Range: [{lower_bound:.4f}, {upper_bound:.4f}]")
+                                            
+                                            # Visualize prediction distribution
+                                            fig, ax = plt.subplots(figsize=(8, 4))
+                                            ax.hist(tree_predictions, bins=20, alpha=0.7, edgecolor='black')
+                                            ax.axvline(prediction, color='red', linestyle='--', linewidth=2, label=f'Prediction: {prediction:.4f}')
+                                            ax.axvline(lower_bound, color='orange', linestyle='--', alpha=0.7, label=f'95% CI')
+                                            ax.axvline(upper_bound, color='orange', linestyle='--', alpha=0.7)
+                                            ax.set_xlabel('Predicted Value')
+                                            ax.set_ylabel('Frequency')
+                                            ax.set_title('Prediction Distribution (Individual Trees)')
+                                            ax.legend()
+                                            st.pyplot(fig)
+                                            
+                                    except:
+                                        pass
+                                
+                                # Feature contribution analysis (for tree-based models)
+                                if hasattr(best_model, 'feature_importances_'):
+                                    st.markdown("#### Feature Contribution to This Prediction")
+                                    
+                                    # Calculate feature contributions for this specific prediction
+                                    feature_importance = best_model.feature_importances_
+                                    input_values = [user_inputs[feature] for feature in feature_names]
+                                    
+                                    # Create contribution analysis
+                                    contribution_df = pd.DataFrame({
+                                        'Feature': feature_names,
+                                        'Your_Value': input_values,
+                                        'Importance': feature_importance,
+                                        'Weighted_Contribution': np.array(input_values) * feature_importance
+                                    }).sort_values('Weighted_Contribution', ascending=False, key=abs)
+                                    
+                                    # Display top contributing features
+                                    st.markdown("**Top Contributing Features for Your Input:**")
+                                    
+                                    top_features = contribution_df.head(5)
+                                    
+                                    for _, row in top_features.iterrows():
+                                        impact = "Positive" if row['Weighted_Contribution'] > 0 else "Negative"
+                                        impact_color = "green" if impact == "Positive" else "red"
+                                        
+                                        st.markdown(f"- **{row['Feature']}**: {row['Your_Value']:.4f} → :{impact_color}[{impact} Impact] (Weight: {row['Importance']:.4f})")
+                                
+                                # Comparison with training data
+                                st.markdown("#### How Your Input Compares to Training Data")
+                                
+                                comparison_data = []
+                                for feature in feature_names:
+                                    user_value = user_inputs[feature]
+                                    feature_mean = X_train[feature].mean()
+                                    feature_std = X_train[feature].std()
+                                    
+                                    # Calculate z-score
+                                    z_score = (user_value - feature_mean) / feature_std if feature_std > 0 else 0
+                                    
+                                    if abs(z_score) > 2:
+                                        status = "Unusual"
+                                        status_color = "red"
+                                    elif abs(z_score) > 1:
+                                        status = "Somewhat Unusual"
+                                        status_color = "orange"
+                                    else:
+                                        status = "Normal"
+                                        status_color = "green"
+                                    
+                                    comparison_data.append({
+                                        'Feature': feature,
+                                        'Your_Value': user_value,
+                                        'Training_Mean': feature_mean,
+                                        'Z_Score': z_score,
+                                        'Status': status
+                                    })
+                                
+                                comparison_df = pd.DataFrame(comparison_data)
+                                
+                                # Show unusual values
+                                unusual_features = comparison_df[comparison_df['Status'] != 'Normal']
+                                if len(unusual_features) > 0:
+                                    st.warning("⚠️ Some of your input values are unusual compared to training data:")
+                                    for _, row in unusual_features.iterrows():
+                                        st.markdown(f"- **{row['Feature']}**: {row['Your_Value']:.4f} (Z-score: {row['Z_Score']:.2f}) - {row['Status']}")
+                                else:
+                                    st.success("✅ All your input values are within normal ranges")
+                                
+                            except Exception as e:
+                                st.error(f"Error making prediction: {str(e)}")
+                                st.info("This might be due to data preprocessing differences. Please ensure the input format matches the training data.")
+                    
+                    # Example predictions outside the form (forms can't contain other forms)
+                    st.markdown("---")
+                    st.markdown("#### 🚀 Quick Prediction Examples")
+                    
+                    # Create separate form for examples
+                    with st.form("example_predictions_form"):
+                        st.markdown("Select from pre-defined example values to quickly test the model:")
+                        
+                        example_type = st.radio(
+                            "Select Example Type:",
+                            options=["Average Values", "High Values (75th percentile)", "Low Values (25th percentile)", "Custom Mix"],
+                            horizontal=True
+                        )
+                        
+                        # Submit button for examples
+                        example_submitted = st.form_submit_button("📊 Generate Example Prediction", use_container_width=True)
+                    
+                    # Process example prediction request
+                    if example_submitted:
+                        st.markdown("### 🔮 Example Prediction Result")
+                        
+                        try:
+                            # Prepare input data based on selection
+                            X_train = st.session_state.X_train_processed
+                            feature_names = X_train.columns.tolist()
+                            
+                            if example_type == "Average Values":
+                                # Use mean values
+                                example_input = X_train.mean().to_frame().T
+                                st.success("Using average values from training data")
+                            
+                            elif example_type == "High Values (75th percentile)":
+                                # Use 75th percentile values
+                                example_input = X_train.quantile(0.75).to_frame().T
+                                st.success("Using high values (75th percentile) from training data")
+                            
+                            elif example_type == "Low Values (25th percentile)":
+                                # Use 25th percentile values
+                                example_input = X_train.quantile(0.25).to_frame().T
+                                st.success("Using low values (25th percentile) from training data")
+                            
+                            else:  # Custom Mix
+                                # Use a mix of values - mean for half, 75th for quarter, 25th for quarter
+                                feature_thirds = np.array_split(feature_names, 3)
+                                
+                                example_input = pd.DataFrame({
+                                    feature: [X_train[feature].mean()] for feature in feature_thirds[0]
+                                })
+                                
+                                # Add high values for second third
+                                for feature in feature_thirds[1]:
+                                    example_input[feature] = [X_train[feature].quantile(0.75)]
+                                    
+                                # Add low values for last third
+                                for feature in feature_thirds[2]:
+                                    example_input[feature] = [X_train[feature].quantile(0.25)]
+                                
+                                st.success("Using mixed values (average, high, and low) from training data")
+                            
+                            # Show the example input values
+                            with st.expander("View Example Input Values", expanded=False):
+                                # Reorganize into readable format
+                                readable_input = pd.DataFrame({
+                                    'Feature': example_input.columns,
+                                    'Value': example_input.iloc[0].values
+                                })
+                                st.dataframe(readable_input.style.format({'Value': '{:.4f}'}))
+                            
+                            # Make prediction using the model
+                            best_model = st.session_state.best_model
+                            prediction = best_model.predict(example_input)[0]
+                            
+                            # Display results based on task type
+                            if st.session_state.is_classification:
+                                st.markdown("#### Predicted Class")
+                                st.info(f"**Prediction: {prediction}**")
+                                
+                                # Try to get probabilities
+                                try:
+                                    probabilities = best_model.predict_proba(example_input)[0]
+                                    classes = best_model.classes_
+                                    
+                                    # Create probability DataFrame
+                                    prob_df = pd.DataFrame({
+                                        'Class': classes,
+                                        'Probability': probabilities
+                                    }).sort_values('Probability', ascending=False)
+                                    
+                                    # Display probabilities
+                                    st.markdown("#### Class Probabilities")
+                                    st.dataframe(prob_df.style.format({'Probability': '{:.2%}'}))
+                                except:
+                                    st.info("Probability estimates not available for this model")
+                            else:
+                                st.markdown("#### Predicted Value")
+                                st.info(f"**Prediction: {prediction:.4f}**")
+                        
+                        except Exception as e:
+                            st.error(f"Error generating example prediction: {str(e)}")
+                            st.info("This might be due to preprocessing issues or model constraints.")
+                    
+                    # Quick prediction examples buttons (outside both forms)
+                    st.markdown("---")
+                    st.markdown("#### ⚡ Quick Form Fillers")
+                    
+                    example_descriptions = {
+                        "average": "Uses the average (mean) value for each feature from the dataset",
+                        "high": "Uses values at approximately the 90th percentile for each feature",
+                        "low": "Uses values at approximately the 10th percentile for each feature"
+                    }
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if st.button("📊 Use Average Values"):
+                            st.session_state.prediction_example = "average"
+                            st.rerun()
+                        st.caption(example_descriptions["average"])
+                    with col2:
+                        if st.button("📈 Use High Values"):
+                            st.session_state.prediction_example = "high"
+                            st.rerun()
+                        st.caption(example_descriptions["high"])
+                    with col3:
+                        if st.button("📉 Use Low Values"):
+                            st.session_state.prediction_example = "low"
+                            st.rerun()
+                        st.caption(example_descriptions["low"])
+                    
+                    # Help section
+                    with st.expander("❓ How to Use the Prediction System", expanded=False):
+                        st.markdown("""
+                        **Step-by-Step Guide:**
+                        
+                        1. **Enter Feature Values**: Input values for each feature in the form above
+                        2. **Use Helpful Hints**: Hover over each input to see the normal range and statistics
+                        3. **Make Prediction**: Click the "Make Prediction" button to get results
+                        4. **Interpret Results**: 
+                           - For Classification: See predicted class and confidence levels
+                           - For Regression: See predicted value and possible ranges
+                        5. **Analyze Contributions**: Review which features most influenced the prediction
+                        6. **Check Data Quality**: See if your inputs are similar to training data
+                        
+                        **Tips for Better Predictions:**
+                        - Values closer to training data ranges will be more reliable
+                        - Unusual values (high Z-scores) may lead to less accurate predictions
+                        - Use the quick example buttons to see how different input ranges affect predictions
+                        - Pay attention to high-importance features for the most impact
+                        
+                        **Understanding Confidence:**
+                        - **High (>80%)**: Very confident prediction
+                        - **Medium (60-80%)**: Moderately confident prediction  
+                        - **Low (<60%)**: Less confident prediction, consider collecting more data
+                        """)
+                
+                else:
+                    st.error("No feature information available. Please ensure preprocessing was completed successfully.")
+    
     else:
         st.info("Please upload or select a dataset to begin analysis")
