@@ -243,10 +243,27 @@ if file_format == "CSV":
         key=uploader_key
     )
 else:
+    # Add expandable section with JSON guidelines
+    with st.expander("📋 JSON Format Guidelines"):
+        st.markdown("""
+        ### Supported JSON Formats
+        - **Array of objects**: `[{"feature1": "value1", "feature2": 42}, ...]`
+        - **Object with arrays**: `{"feature1": ["value1", "value2"], "feature2": [42, 84]}`
+        
+        ### Complex Data Handling
+        - **Nested structures** (lists, dictionaries) will be converted to strings
+        - **Mixed data types** within columns may affect analysis quality
+        
+        ### Best Practices
+        - Flatten nested structures when possible
+        - Ensure consistent data types within columns
+        - Normalize your data structure before uploading
+        """)
+        
     uploaded_file = st.file_uploader(
         "Upload your JSON dataset", 
         type=["json"],
-        help="Upload a JSON file (.json) - should contain an array of objects or a single object with arrays",
+        help="Upload a JSON file (.json) - Complex data will be converted to string representation for compatibility",
         key=uploader_key
     )
 
@@ -316,6 +333,135 @@ elif use_builtin:
         
 elif uploaded_file is not None:
     try:
+        # Define a function to handle complex data types
+        def preprocess_complex_data(df):
+            """Convert complex data types to safe string representations for better compatibility"""
+            complex_columns = []
+            mixed_type_columns = []
+            
+            for col in df.columns:
+                if df[col].dtype == 'object':
+                    # Get non-null values to check
+                    sample = df[col].dropna()
+                    if len(sample) > 0:
+                        # Check for complex types
+                        has_complex = any(isinstance(x, (list, dict)) for x in sample)
+                        # Check for mixed types (some complex, some simple)
+                        types = set(type(x) for x in sample)
+                        is_mixed = len(types) > 1 and (list in types or dict in types)
+                        
+                        if has_complex:
+                            complex_columns.append(col)
+                            if is_mixed:
+                                mixed_type_columns.append(col)
+                            
+                            # Convert to string representation
+                            df[col] = df[col].apply(lambda x: str(x) if x is not None else None)
+            
+            # Provide informative messages to the user
+            if complex_columns:
+                st.warning(f"⚠️ Found {len(complex_columns)} columns with complex data types (lists/dictionaries)")
+                st.info("These columns have been converted to string format for compatibility.")
+                
+                if mixed_type_columns:
+                    st.warning(f"⚠️ {len(mixed_type_columns)} columns contain mixed data types, which may cause issues in analysis.")
+                    st.info("Consider standardizing your data format before upload for best results.")
+                    
+                # Display more details in an expandable section
+                with st.expander("View affected columns"):
+                    for col in complex_columns:
+                        if col in mixed_type_columns:
+                            st.write(f"- **{col}**: Contains mixed types including complex structures")
+                        else:
+                            st.write(f"- **{col}**: Contains complex structures (converted to strings)")
+            
+            return df
+            
+        # Helper function to analyze JSON structure and provide ML compatibility score
+        def analyze_json_structure(data):
+            """Analyze JSON structure and provide ML compatibility score"""
+            analysis = {
+                "structure_type": "",
+                "ml_compatibility": 0,  # 0-100 score
+                "issues": [],
+                "recommendations": []
+            }
+            
+            # Determine structure type
+            if isinstance(data, list):
+                if len(data) > 0 and isinstance(data[0], dict):
+                    analysis["structure_type"] = "array_of_objects"
+                    # Check for consistency across objects
+                    keys_set = [set(obj.keys()) for obj in data[:20]]  # Check first 20
+                    if len(keys_set) > 1 and len(set.union(*keys_set)) != len(set.intersection(*keys_set)):
+                        analysis["issues"].append("Inconsistent keys across objects")
+                        analysis["recommendations"].append("Ensure all objects have the same set of keys")
+                else:
+                    analysis["structure_type"] = "array_of_values"
+                    analysis["issues"].append("Simple array of values (not ideal for ML)")
+                    analysis["recommendations"].append("Use array of objects or object with arrays format")
+            elif isinstance(data, dict):
+                # Check if values are arrays
+                values_are_arrays = [isinstance(v, list) for v in data.values()]
+                if all(values_are_arrays):
+                    analysis["structure_type"] = "object_with_arrays"
+                    # Check for equal length arrays
+                    lengths = [len(v) for v in data.values()]
+                    if len(set(lengths)) > 1:
+                        analysis["issues"].append("Arrays have different lengths")
+                        analysis["recommendations"].append("Ensure all arrays have the same length")
+                else:
+                    analysis["structure_type"] = "single_object"
+                    analysis["issues"].append("Single object (limited for ML)")
+                    analysis["recommendations"].append("Provide multiple objects for better analysis")
+            
+            # Check for complex nested structures
+            complex_count = 0
+            mixed_type_count = 0
+            
+            if analysis["structure_type"] == "array_of_objects":
+                # Sample first 20 objects
+                for obj in data[:min(20, len(data))]:
+                    for key, value in obj.items():
+                        if isinstance(value, (list, dict)):
+                            complex_count += 1
+                        # Check for mixed types
+                        if isinstance(obj.get(key), (list, dict)) and any(not isinstance(other.get(key), (list, dict)) for other in data[:20] if key in other):
+                            mixed_type_count += 1
+            
+            elif analysis["structure_type"] == "object_with_arrays":
+                for key, array in data.items():
+                    if isinstance(array, list) and any(isinstance(item, (list, dict)) for item in array[:20]):
+                        complex_count += 1
+                    # Check for mixed types in arrays
+                    if isinstance(array, list):
+                        types = set(type(item) for item in array[:20])
+                        if len(types) > 1:
+                            mixed_type_count += 1
+            
+            if complex_count > 0:
+                analysis["issues"].append(f"Found {complex_count} complex nested structures")
+                analysis["recommendations"].append("Flatten nested structures for better compatibility")
+            
+            if mixed_type_count > 0:
+                analysis["issues"].append(f"Found {mixed_type_count} features with mixed data types")
+                analysis["recommendations"].append("Standardize data types within features")
+            
+            # Calculate ML compatibility score
+            base_score = 80
+            if analysis["structure_type"] in ["array_of_objects", "object_with_arrays"]:
+                base_score = 90
+            elif analysis["structure_type"] == "single_object":
+                base_score = 60
+            else:
+                base_score = 40
+            
+            # Deductions for issues
+            deduction = min(5 * len(analysis["issues"]) + 2 * complex_count + 3 * mixed_type_count, 80)
+            analysis["ml_compatibility"] = max(base_score - deduction, 10)
+            
+            return analysis
+
         if file_format == "CSV":
             df = pd.read_csv(uploaded_file)
             st.success("CSV dataset uploaded successfully!")
@@ -324,6 +470,35 @@ elif uploaded_file is not None:
             
             # Read JSON file
             json_data = json.load(uploaded_file)
+            
+            # Analyze JSON structure
+            json_analysis = analyze_json_structure(json_data)
+            
+            # Display analysis in expandable section
+            with st.expander("JSON Structure Analysis", expanded=True if json_analysis["ml_compatibility"] < 70 else False):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown(f"**Structure Type:** {json_analysis['structure_type'].replace('_', ' ').title()}")
+                    st.markdown(f"**ML Compatibility Score:** {json_analysis['ml_compatibility']}/100")
+                    
+                    # Show score gauge
+                    score = json_analysis['ml_compatibility']
+                    color = "green" if score >= 80 else "orange" if score >= 50 else "red"
+                    st.markdown(f"<div style='background: linear-gradient(to right, {color} {score}%, #e0e0e0 {score}%); height: 10px; border-radius: 5px;'></div>", unsafe_allow_html=True)
+                
+                with col2:
+                    if json_analysis["issues"]:
+                        st.markdown("**Issues Detected:**")
+                        for issue in json_analysis["issues"]:
+                            st.markdown(f"- {issue}")
+                    else:
+                        st.markdown("✅ **No structure issues detected**")
+                
+                if json_analysis["recommendations"]:
+                    st.markdown("**Recommendations:**")
+                    for rec in json_analysis["recommendations"]:
+                        st.markdown(f"- {rec}")
             
             # Handle different JSON structures
             if isinstance(json_data, list):
@@ -344,6 +519,9 @@ elif uploaded_file is not None:
                     st.info("Note: Single object converted to one-row dataset")
             else:
                 raise ValueError("Unsupported JSON structure. Please provide an array of objects or an object with arrays.")
+                
+            # Convert complex JSON data types to safer string representations
+            df = preprocess_complex_data(df)
                 
         st.session_state.data_loaded = True
         
@@ -376,7 +554,26 @@ if st.session_state.data_loaded:
     with st.expander("📊 Dataset Overview", expanded=True):
         col1, col2 = st.columns([2, 1])
         with col1:
-            st.dataframe(df.head(10), width="stretch")  # Show first 10 rows with full width
+            try:
+                # Attempt to display the dataframe using Streamlit
+                st.dataframe(df.head(10), width="stretch")  # Show first 10 rows with full width
+            except Exception as e:
+                st.error(f"Error displaying dataframe: {str(e)}")
+                st.info("Displaying simplified dataframe view...")
+                
+                # Try to display a simplified version with stringified complex values
+                try:
+                    # Convert all columns with complex types to strings
+                    df_display = df.head(10).copy()
+                    for col in df_display.columns:
+                        if df_display[col].dtype == 'object':
+                            df_display[col] = df_display[col].apply(lambda x: to_safe_string(x))
+                    st.dataframe(df_display, width="stretch")
+                except:
+                    # If all else fails, show as plain text
+                    st.write("Preview of first 5 rows (simplified):")
+                    for i, row in df.head(5).iterrows():
+                        st.write(f"Row {i}:", {col: to_safe_string(val) for col, val in row.items()})
         with col2:
             st.markdown("### Dataset Profile")
             st.markdown(f"**Rows:** {df.shape[0]}")
@@ -402,20 +599,51 @@ if st.session_state.data_loaded:
         # Better formatting for summary statistics
         if len(num_cols) > 0:
             st.markdown("#### Numerical Features Statistics")
-            st.dataframe(df[num_cols].describe().T.style.highlight_max(axis=1, color='lightgreen').highlight_min(axis=1, color='#ffcccc'))
+            try:
+                # Try the styled version first
+                st.dataframe(
+                    df[num_cols].describe().T.style.highlight_max(axis=1, color='lightgreen').highlight_min(axis=1, color='#ffcccc'),
+                    width="stretch"
+                )
+            except Exception as e:
+                st.error(f"Error displaying numeric summary: {str(e)}")
+                # Fallback to simpler version without styling
+                try:
+                    st.dataframe(df[num_cols].describe().T, width="stretch")
+                except:
+                    st.write("Summary statistics (could not display as table):")
+                    st.write(df[num_cols].describe().T.to_dict())
             
             # Advanced statistics
-            skew_data = df[num_cols].skew().reset_index()
-            skew_data.columns = ['Feature', 'Skewness']
-            kurt_data = df[num_cols].kurtosis().reset_index()
-            kurt_data.columns = ['Feature', 'Kurtosis']
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Skewness** (measure of asymmetry)")
-                st.dataframe(skew_data)
-            with col2:
-                st.markdown("**Kurtosis** (measure of tailedness)")
+            try:
+                # Calculate skewness and kurtosis safely
+                skew_data = df[num_cols].skew().reset_index()
+                skew_data.columns = ['Feature', 'Skewness']
+                kurt_data = df[num_cols].kurtosis().reset_index()
+                kurt_data.columns = ['Feature', 'Kurtosis']
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Skewness** (measure of asymmetry)")
+                    try:
+                        st.dataframe(skew_data, width="stretch")
+                    except Exception as e:
+                        st.error(f"Error displaying skewness: {str(e)}")
+                        # Fallback to simple text display
+                        for _, row in skew_data.iterrows():
+                            st.write(f"{row['Feature']}: {row['Skewness']:.2f}")
+                
+                with col2:
+                    st.markdown("**Kurtosis** (measure of tailedness)")
+                    try:
+                        st.dataframe(kurt_data, width="stretch")
+                    except Exception as e:
+                        st.error(f"Error displaying kurtosis: {str(e)}")
+                        # Fallback to simple text display
+                        for _, row in kurt_data.iterrows():
+                            st.write(f"{row['Feature']}: {row['Kurtosis']:.2f}")
+            except Exception as e:
+                st.error(f"Could not calculate skewness/kurtosis: {str(e)}")
                 st.dataframe(kurt_data)
             
             st.markdown("""
@@ -428,13 +656,104 @@ if st.session_state.data_loaded:
             
         if len(cat_cols) > 0:
             st.markdown("#### Categorical Features Overview")
-            cat_summary = pd.DataFrame({
-                'Feature': cat_cols,
-                'Unique Values': [df[col].nunique() for col in cat_cols],
-                'Most Common': [df[col].value_counts().index[0] if not df[col].value_counts().empty else 'N/A' for col in cat_cols],
-                'Frequency (%)': [df[col].value_counts(normalize=True).max() * 100 if not df[col].value_counts().empty else 0 for col in cat_cols]
-            })
-            st.dataframe(cat_summary)
+            
+            # Helper function to safely get nunique with fallback for unhashable types
+            def safe_nunique(series):
+                try:
+                    # First attempt the standard method
+                    return series.nunique()
+                except (TypeError, ValueError):
+                    try:
+                        # Convert all values to their string representation and try again
+                        return series.apply(lambda x: str(x) if x is not None else "None").nunique()
+                    except:
+                        # If all else fails, return a placeholder
+                        return "Complex data"
+            
+            # Helper function to safely get value counts
+            def safe_value_counts(series):
+                try:
+                    # First attempt the standard method
+                    return series.value_counts()
+                except (TypeError, ValueError):
+                    try:
+                        # Convert all values to their string representation and try again
+                        str_series = series.apply(lambda x: str(x) if x is not None else "None")
+                        return str_series.value_counts()
+                    except:
+                        # Return an empty series if all attempts fail
+                        return pd.Series(dtype='object')
+            
+            # Helper function to convert any value to a string representation
+            def to_safe_string(val):
+                if val is None:
+                    return "None"
+                try:
+                    # For simple types, just convert to string
+                    if isinstance(val, (str, int, float, bool)):
+                        return str(val)
+                    # For complex types like lists, dicts, etc.
+                    return f"Complex: {type(val).__name__}"
+                except:
+                    return "Unknown type"
+            
+            # Safely get the most common value as a string
+            def get_most_common_as_string(series):
+                try:
+                    counts = safe_value_counts(series)
+                    if counts.empty:
+                        return "Complex data"
+                    
+                    # Convert the most common value to string, whatever it may be
+                    most_common = counts.index[0]
+                    return to_safe_string(most_common)
+                except Exception as e:
+                    return f"Error: {str(e)[:20]}"
+                    
+            # Create a simpler data structure for the categorical summary
+            cat_features = []
+            unique_values = []
+            most_common_values = []
+            frequencies = []
+            
+            for col in cat_cols:
+                # Add feature name
+                cat_features.append(col)
+                
+                # Add unique values count (as string)
+                unique_val = safe_nunique(df[col])
+                unique_values.append(to_safe_string(unique_val))
+                
+                # Add most common value (as string)
+                most_common = get_most_common_as_string(df[col])
+                most_common_values.append(most_common)
+                
+                # Add frequency
+                try:
+                    counts = safe_value_counts(df[col])
+                    freq = counts.max() * 100 if not counts.empty else 0
+                    frequencies.append(f"{freq:.1f}%")
+                except:
+                    frequencies.append("N/A")
+            
+            # Create the summary DataFrame with all string values
+            try:
+                cat_summary = {
+                    'Feature': cat_features,
+                    'Unique Values': unique_values,
+                    'Most Common': most_common_values,
+                    'Frequency': frequencies
+                }
+                
+                # Convert to dataframe with explicit string dtypes
+                cat_df = pd.DataFrame(cat_summary).astype(str)
+                st.dataframe(cat_df)
+            except Exception as e:
+                st.error(f"Error displaying categorical summary: {str(e)}")
+                # Display as plain text as fallback
+                st.write("Categorical Features Summary:")
+                for i, feature in enumerate(cat_features):
+                    st.write(f"- **{feature}**: {unique_values[i]} unique values, most common: {most_common_values[i]} ({frequencies[i]})")
     
     # Tab 2: Data Distribution
     with eda_tabs[1]:
@@ -497,37 +816,130 @@ if st.session_state.data_loaded:
             
             if selected_cat_cols:
                 for col_name in selected_cat_cols:
-                    # Calculate value counts and percentages
-                    value_counts = df[col_name].value_counts()
-                    total = len(df[col_name])
-                    
-                    # Display counts and percentages
-                    col1, col2 = st.columns([2, 1])
-                    with col1:
-                        fig, ax = plt.subplots(figsize=(10, 6))
-                        sns.countplot(x=df[col_name], order=value_counts.index, ax=ax)
-                        ax.set_title(f"Distribution of {col_name}")
-                        plt.xticks(rotation=45, ha='right')
-                        st.pyplot(fig)
-                    
-                    with col2:
-                        # Show percentages in a table
-                        percentages = (value_counts / total * 100).reset_index()
-                        percentages.columns = [col_name, 'Percentage (%)']
-                        percentages['Percentage (%)'] = percentages['Percentage (%)'].round(2)
-                        st.dataframe(percentages)
+                    # Try to calculate value counts and percentages, handle complex data
+                    try:
+                        value_counts = df[col_name].value_counts()
+                        total = len(df[col_name])
                         
-                        # Highlight imbalance if present
-                        max_pct = percentages['Percentage (%)'].max()
-                        min_pct = percentages['Percentage (%)'].min()
-                        if max_pct > 75 or min_pct < 5:
-                            st.warning(f"⚠️ Imbalance detected in {col_name}. This may affect model performance.")
-                            st.markdown("""
-                            **Recommendation**: Consider resampling techniques:
-                            - Oversampling minority class
-                            - Undersampling majority class
-                            - SMOTE for synthetic data generation
-                            """)
+                        # Display counts and percentages
+                        col1, col2 = st.columns([2, 1])
+                        with col1:
+                            fig, ax = plt.subplots(figsize=(10, 6))
+                            sns.countplot(x=df[col_name], order=value_counts.index, ax=ax)
+                            ax.set_title(f"Distribution of {col_name}")
+                            plt.xticks(rotation=45, ha='right')
+                            st.pyplot(fig)
+                    except (TypeError, ValueError) as e:
+                        st.warning(f"Could not visualize column '{col_name}' using standard methods due to complex data types.")
+                        
+                        # Try specialized visualization for complex data
+                        try:
+                            # Detect if column contains lists
+                            sample = df[col_name].dropna().head(100)
+                            contains_lists = any(isinstance(x, list) or (isinstance(x, str) and x.startswith('[') and x.endswith(']')) for x in sample)
+                            contains_dicts = any(isinstance(x, dict) or (isinstance(x, str) and x.startswith('{') and x.endswith('}')) for x in sample)
+                            
+                            if contains_lists:
+                                st.info("This column appears to contain lists. Showing list length distribution.")
+                                
+                                # Extract list lengths
+                                def get_list_length(x):
+                                    if isinstance(x, list):
+                                        return len(x)
+                                    elif isinstance(x, str) and x.startswith('[') and x.endswith(']'):
+                                        # Try to parse string representation of list
+                                        try:
+                                            return len(eval(x))
+                                        except:
+                                            return 1
+                                    return 0
+                                
+                                list_lengths = df[col_name].dropna().apply(get_list_length)
+                                
+                                fig, ax = plt.subplots(figsize=(10, 6))
+                                sns.histplot(list_lengths, kde=True, ax=ax)
+                                ax.set_title(f"List Length Distribution for {col_name}")
+                                ax.set_xlabel("List Length")
+                                st.pyplot(fig)
+                                
+                                # Show summary statistics for list lengths
+                                st.markdown(f"**List Length Statistics for {col_name}**:")
+                                st.markdown(f"- **Mean Length**: {list_lengths.mean():.2f}")
+                                st.markdown(f"- **Max Length**: {list_lengths.max()}")
+                                st.markdown(f"- **Min Length**: {list_lengths.min()}")
+                                
+                            elif contains_dicts:
+                                st.info("This column appears to contain dictionaries. Showing key distribution.")
+                                
+                                # Extract and count dictionary keys
+                                all_keys = []
+                                key_counts = {}
+                                
+                                for item in df[col_name].dropna():
+                                    if isinstance(item, dict):
+                                        keys = item.keys()
+                                    elif isinstance(item, str) and item.startswith('{') and item.endswith('}'):
+                                        try:
+                                            keys = eval(item).keys()
+                                        except:
+                                            continue
+                                    else:
+                                        continue
+                                        
+                                    for key in keys:
+                                        all_keys.append(key)
+                                        key_counts[key] = key_counts.get(key, 0) + 1
+                                
+                                # Create bar chart of key frequencies
+                                if key_counts:
+                                    key_df = pd.DataFrame(list(key_counts.items()), columns=['Key', 'Frequency'])
+                                    key_df = key_df.sort_values('Frequency', ascending=False).head(15)
+                                    
+                                    fig, ax = plt.subplots(figsize=(10, 6))
+                                    sns.barplot(data=key_df, x='Key', y='Frequency', ax=ax)
+                                    ax.set_title(f"Dictionary Key Distribution for {col_name}")
+                                    plt.xticks(rotation=45, ha='right')
+                                    st.pyplot(fig)
+                                else:
+                                    st.write("Could not extract keys from dictionaries.")
+                            else:
+                                st.info("This column contains complex data types that cannot be directly visualized. Consider converting to simpler types for analysis.")
+                        except Exception as e:
+                            st.error(f"Error analyzing complex data: {str(e)}")
+                        
+                    # Only show percentages if value_counts and total variables are defined
+                    try:
+                        # Use get() function to check if variables exist without raising an exception
+                        value_counts_var = locals().get('value_counts')
+                        total_var = locals().get('total')
+                        
+                        if value_counts_var is not None and total_var is not None:
+                            with col2:
+                                try:
+                                    # Show percentages in a table
+                                    percentages = (value_counts_var / total_var * 100).reset_index()
+                                    percentages.columns = [col_name, 'Percentage (%)']
+                                    percentages['Percentage (%)'] = percentages['Percentage (%)'].round(2)
+                                    st.dataframe(percentages)
+                                except Exception as e:
+                                    st.warning(f"Could not calculate percentages: {str(e)}")
+                    except Exception as e:
+                        st.warning(f"Error processing category percentages: {str(e)}")
+                        
+                        # Check if percentages is defined and then highlight imbalance if present
+                        try:
+                            if 'percentages' in locals() and not percentages.empty:
+                                max_pct = percentages['Percentage (%)'].max()
+                                min_pct = percentages['Percentage (%)'].min()
+                                if max_pct > 75 or min_pct < 5:
+                                    st.warning(f"⚠️ Imbalance detected in {col_name}. This may affect model performance.")
+                                    st.markdown("""
+                                    **Recommendation**: Consider resampling techniques:
+                                    - Oversampling minority class
+                                    - Undersampling majority class
+                                    """)
+                        except Exception as e:
+                            pass  # Silently handle errors in imbalance detection
     
     # Tab 3: Correlation Analysis
     with eda_tabs[2]:
@@ -694,7 +1106,15 @@ if st.session_state.data_loaded:
                         df_imputed[feature_to_impute].fillna(fill_value, inplace=True)
                         st.write(f"Filled missing values with mean: {fill_value:.2f}")
                     else:
-                        fill_value = df[feature_to_impute].mode()[0]
+                        mode_result = df[feature_to_impute].mode()
+                        if len(mode_result) > 0:
+                            # Use the first mode value if it exists
+                            fill_value = mode_result[0]
+                        else:
+                            # If no mode exists (all unique values), use a placeholder
+                            fill_value = "Unknown"
+                            st.warning(f"No mode found for feature '{feature_to_impute}'. Using 'Unknown' as placeholder.")
+                        
                         df_imputed[feature_to_impute].fillna(fill_value, inplace=True)
                         st.write(f"Filled missing values with mode: {fill_value}")
                         
@@ -819,7 +1239,7 @@ if st.session_state.data_loaded:
                 1. **Investigate first**: Understand if outliers represent errors or valid extreme cases
                 
                 2. **Treatment options**:
-                   - **Trimming**: Remove outliers (if they're errors or very few)
+                   - **Trimming**: Remove outliers (if they are errors or very few)
                    - **Capping**: Set upper/lower limits (Winsorization)
                    - **Transformation**: Apply log, square root, or Box-Cox to reduce influence
                    - **Binning**: Convert to categorical ranges
@@ -902,6 +1322,9 @@ if st.session_state.data_loaded:
                     with col2:
                         st.markdown("**After Treatment**")
                         st.write(df_treated[selected_viz_feature].describe())
+    
+    # NOTE: Complex Data Analysis tab has been temporarily removed due to syntax issues
+    # We'll add it back in a future update with a more robust implementation
 
     # Step 3: Advanced Machine Learning Pipeline
     st.markdown("## 🤖 Machine Learning Pipeline")
@@ -932,8 +1355,18 @@ if st.session_state.data_loaded:
                         old_is_classification = st.session_state.is_classification
                     
                     # Check if new target would be classification
-                    if df[target_col].dtype == 'object' or df[target_col].nunique() < 10:
-                        new_is_classification = True
+                    try:
+                        # Safely check if it's a classification task
+                        if df[target_col].dtype == 'object' or (
+                            pd.api.types.is_numeric_dtype(df[target_col].dtype) and 
+                            df[target_col].nunique() < 10
+                        ):
+                            new_is_classification = True
+                    except TypeError:
+                        # If we can't determine nunique due to complex types,
+                        # assume it's not suitable for classification
+                        st.warning(f"The selected target column '{target_col}' contains complex data that may not be suitable for modeling.")
+                        new_is_classification = False
                     
                     # If task type changed (classification to regression or vice versa)
                     if old_is_classification != new_is_classification:
@@ -964,32 +1397,66 @@ if st.session_state.data_loaded:
                 st.session_state.target_col = target_col
                 
                 # Analyze target variable
-                if df[target_col].dtype == 'object' or df[target_col].nunique() < 10:
-                    is_classification = True
-                    task_type = "Classification"
+                try:
+                    # Safely detect if it's a classification task
+                    if df[target_col].dtype == 'object' or (
+                        pd.api.types.is_numeric_dtype(df[target_col].dtype) and 
+                        df[target_col].nunique() < 10
+                    ):
+                        is_classification = True
+                        task_type = "Classification"
+                    else:
+                        is_classification = False
+                        task_type = "Regression"
+                except TypeError:
+                    # Handle complex data types
+                    st.warning(f"The target column '{target_col}' contains complex data types that aren't suitable for modeling.")
+                    is_classification = False
+                    task_type = "Unknown (Complex Data)"
                     
                     # Visualize target distribution
                     st.markdown(f"#### Target Distribution: {target_col}")
-                    fig, ax = plt.subplots(figsize=(10, 6))
-                    value_counts = df[target_col].value_counts().sort_index()
-                    if len(value_counts) <= 30:  # Don't plot if too many categories
-                        sns.countplot(x=df[target_col], ax=ax, order=value_counts.index)
-                        plt.xticks(rotation=45, ha='right')
-                        st.pyplot(fig)
+                    try:
+                        fig, ax = plt.subplots(figsize=(10, 6))
+                        value_counts = df[target_col].value_counts().sort_index()
+                        if len(value_counts) <= 30:  # Don't plot if too many categories
+                            sns.countplot(x=df[target_col], ax=ax, order=value_counts.index)
+                            plt.xticks(rotation=45, ha='right')
+                            st.pyplot(fig)
+                    except (TypeError, ValueError) as e:
+                        st.warning(f"Could not visualize target distribution due to complex data: {str(e)}")
                     
                     # Check for class imbalance
-                    class_counts = df[target_col].value_counts(normalize=True) * 100
-                    st.dataframe(pd.DataFrame({'Class': class_counts.index, 'Percentage (%)': class_counts.values.round(2)}))
+                    try:
+                        class_counts = df[target_col].value_counts(normalize=True) * 100
+                        
+                        # Convert any complex objects to strings
+                        safe_index = [str(idx) if not isinstance(idx, (str, int, float, bool)) else idx 
+                                     for idx in class_counts.index]
+                        
+                        # Create a DataFrame with safe values
+                        class_df = pd.DataFrame({
+                            'Class': safe_index,
+                            'Percentage (%)': class_counts.values.round(2)
+                        })
+                        st.dataframe(class_df)
+                    except Exception as e:
+                        st.warning(f"Could not analyze class distribution due to complex data: {str(e)}")
                     
-                    if class_counts.max() > 75 or class_counts.min() < 10:
-                        st.warning("⚠️ **Class Imbalance Detected**: This may affect model performance")
-                        st.markdown("""
-                        **Mitigation Strategies**:
-                        - Oversampling minority classes
-                        - Undersampling majority class
-                        - Using class weights
-                        - SMOTE (Synthetic Minority Over-sampling Technique)
-                        """)
+                    # Check for class imbalance if we successfully created class_counts
+                    if 'class_counts' in locals() and len(class_counts) > 1:
+                        try:
+                            if class_counts.max() > 75 or class_counts.min() < 10:
+                                st.warning("⚠️ **Class Imbalance Detected**: This may affect model performance")
+                                st.markdown("""
+                                **Mitigation Strategies**:
+                                - Oversampling minority classes
+                                - Undersampling majority class
+                                - Using class weights
+                                - SMOTE (Synthetic Minority Over-sampling Technique)
+                                """)
+                        except Exception:
+                            st.info("Could not check for class imbalance due to complex data types.")
                         
                         # Allow user to select balancing strategy
                         balance_strategy = st.radio(
@@ -1004,17 +1471,30 @@ if st.session_state.data_loaded:
                     
                     # Visualize target distribution for regression
                     st.markdown(f"#### Target Distribution: {target_col}")
-                    fig, ax = plt.subplots(figsize=(10, 6))
-                    sns.histplot(df[target_col], kde=True, ax=ax)
-                    st.pyplot(fig)
+                    try:
+                        # Make sure the target column contains numeric data
+                        if pd.api.types.is_numeric_dtype(df[target_col]):
+                            fig, ax = plt.subplots(figsize=(10, 6))
+                            sns.histplot(df[target_col], kde=True, ax=ax)
+                            st.pyplot(fig)
+                        else:
+                            st.warning(f"Cannot visualize non-numeric data for regression task: {target_col}")
+                    except Exception as e:
+                        st.warning(f"Could not visualize target distribution due to data type issues: {str(e)}")
                     
                     # Show statistics
-                    st.dataframe(df[target_col].describe().to_frame().T)
-                    
-                    # Check for skewness
-                    skewness = df[target_col].skew()
-                    if abs(skewness) > 1:
-                        st.warning(f"⚠️ Target is skewed (skewness={skewness:.2f}). Consider transformation.")
+                    try:
+                        if pd.api.types.is_numeric_dtype(df[target_col]):
+                            st.dataframe(df[target_col].describe().to_frame().T)
+                            
+                            # Check for skewness
+                            skewness = df[target_col].skew()
+                            if abs(skewness) > 1:
+                                st.warning(f"⚠️ Target is skewed (skewness={skewness:.2f}). Consider transformation.")
+                        else:
+                            st.warning("Cannot display statistics for non-numeric data in regression task.")
+                    except Exception as e:
+                        st.warning(f"Could not analyze target statistics due to data type issues: {str(e)}")
                 
                 # Store task type in session state
                 st.session_state.is_classification = is_classification
@@ -1204,7 +1684,14 @@ if st.session_state.data_loaded:
                         if cat_missing_strategy == "Mode imputation":
                             for col in st.session_state.cat_cols:
                                 if X_train[col].isnull().any():
-                                    mode_val = X_train[col].mode()[0]
+                                    mode_result = X_train[col].mode()
+                                    if len(mode_result) > 0:
+                                        # Use the first mode value if it exists
+                                        mode_val = mode_result[0]
+                                    else:
+                                        # If no mode exists (all unique values), use a placeholder
+                                        st.warning(f"No mode found for column '{col}'. Using 'Unknown' as placeholder.")
+                                        mode_val = "Unknown"
                                     X_train[col].fillna(mode_val, inplace=True)
                                     X_test[col].fillna(mode_val, inplace=True)
                                     
@@ -1240,16 +1727,34 @@ if st.session_state.data_loaded:
                             st.session_state.encoders = {}
                             
                             # We'll store individual one-hot encoders, but still use pandas get_dummies for the actual transform
+                            # First convert any complex types to strings to avoid unhashable type errors
                             for col in st.session_state.cat_cols:
+                                # Convert any complex data types to strings
+                                X_train[col] = X_train[col].apply(lambda x: str(x) if isinstance(x, (list, dict)) else x)
+                                X_test[col] = X_test[col].apply(lambda x: str(x) if isinstance(x, (list, dict)) else x)
+                                
+                                # Create and store encoder
                                 onehot_encoder = OneHotEncoder(sparse_output=False, drop='first', handle_unknown='ignore')
                                 onehot_encoder.fit(X_train[[col]].astype(str))
                                 # Store the encoder for future use in prediction
                                 st.session_state.encoders[col] = onehot_encoder
                             
-                            # Get dummies for train set
-                            X_train_encoded = pd.get_dummies(X_train, columns=st.session_state.cat_cols, drop_first=True)
-                            # Get dummies for test set and ensure same columns as training
-                            X_test_encoded = pd.get_dummies(X_test, columns=st.session_state.cat_cols, drop_first=True)
+                            try:
+                                # Get dummies for train set
+                                X_train_encoded = pd.get_dummies(X_train, columns=st.session_state.cat_cols, drop_first=True)
+                                # Get dummies for test set and ensure same columns as training
+                                X_test_encoded = pd.get_dummies(X_test, columns=st.session_state.cat_cols, drop_first=True)
+                            except TypeError as e:
+                                st.error(f"Error during one-hot encoding: {str(e)}")
+                                st.warning("Converting all categorical columns to string type and trying again...")
+                                
+                                # Force convert all categorical columns to strings as a fallback
+                                for col in st.session_state.cat_cols:
+                                    X_train[col] = X_train[col].astype(str)
+                                    X_test[col] = X_test[col].astype(str)
+                                    
+                                X_train_encoded = pd.get_dummies(X_train, columns=st.session_state.cat_cols, drop_first=True)
+                                X_test_encoded = pd.get_dummies(X_test, columns=st.session_state.cat_cols, drop_first=True)
                             # Handle potential column differences
                             missing_cols = set(X_train_encoded.columns) - set(X_test_encoded.columns)
                             for col in missing_cols:
@@ -3006,7 +3511,95 @@ if st.session_state.data_loaded:
                                     not pd.api.types.is_numeric_dtype(feature_dtype)
                                 )
                                 
-                                if is_categorical:
+                                # First, detect if this is a complex data type column (list or dict)
+                                is_complex = False
+                                complex_type = None
+                                
+                                # Sample values to check for complex data types
+                                sample = input_reference_data[feature].dropna().head(20)
+                                if len(sample) > 0:
+                                    has_lists = any(isinstance(x, list) or (isinstance(x, str) and x.startswith('[') and x.endswith(']')) for x in sample)
+                                    has_dicts = any(isinstance(x, dict) or (isinstance(x, str) and x.startswith('{') and x.endswith('}')) for x in sample)
+                                    
+                                    if has_lists:
+                                        is_complex = True
+                                        complex_type = "list"
+                                    elif has_dicts:
+                                        is_complex = True
+                                        complex_type = "dict"
+                                
+                                if is_complex:
+                                    # Handle complex data type columns
+                                    st.markdown(f"**{feature}** (Complex: {complex_type})")
+                                    
+                                    if complex_type == "list":
+                                        # For lists, provide a text input with JSON format
+                                        st.markdown("*Enter as comma-separated values:*")
+                                        
+                                        # Extract a typical list as an example
+                                        example_list = None
+                                        for val in sample:
+                                            if isinstance(val, list) and len(val) > 0:
+                                                example_list = val
+                                                break
+                                            elif isinstance(val, str) and val.startswith('[') and val.endswith(']'):
+                                                try:
+                                                    parsed = eval(val)
+                                                    if isinstance(parsed, list) and len(parsed) > 0:
+                                                        example_list = parsed
+                                                        break
+                                                except:
+                                                    pass
+                                        
+                                        example_text = ", ".join(str(x) for x in example_list[:3]) + "..." if example_list else "item1, item2, item3"
+                                        user_input = st.text_input(f"Example: {example_text}", key=f"complex_{feature}", help="Enter items separated by commas")
+                                        
+                                        # Convert user input to list format
+                                        if user_input:
+                                            try:
+                                                user_inputs[feature] = str([item.strip() for item in user_input.split(',')])
+                                            except:
+                                                user_inputs[feature] = "[]"  # Empty list as string
+                                        else:
+                                            user_inputs[feature] = "[]"  # Empty list as string
+                                    
+                                    elif complex_type == "dict":
+                                        # For dictionaries, provide a JSON input field
+                                        st.markdown("*Enter as key:value pairs:*")
+                                        
+                                        # Extract a typical dict as example
+                                        example_dict = None
+                                        for val in sample:
+                                            if isinstance(val, dict) and len(val) > 0:
+                                                example_dict = val
+                                                break
+                                            elif isinstance(val, str) and val.startswith('{') and val.endswith('}'):
+                                                try:
+                                                    parsed = eval(val)
+                                                    if isinstance(parsed, dict) and len(parsed) > 0:
+                                                        example_dict = parsed
+                                                        break
+                                                except:
+                                                    pass
+                                        
+                                        example_text = ", ".join(f"{k}:{v}" for k, v in list(example_dict.items())[:2]) + "..." if example_dict else "key1:value1, key2:value2"
+                                        user_input = st.text_input(f"Example: {example_text}", key=f"complex_{feature}", help="Enter as key:value pairs separated by commas")
+                                        
+                                        # Convert user input to dict format
+                                        if user_input:
+                                            try:
+                                                pairs = {}
+                                                for pair in user_input.split(','):
+                                                    if ':' in pair:
+                                                        k, v = pair.split(':', 1)
+                                                        pairs[k.strip()] = v.strip()
+                                                user_inputs[feature] = str(pairs)
+                                            except:
+                                                user_inputs[feature] = "{}"  # Empty dict as string
+                                        else:
+                                            user_inputs[feature] = "{}"  # Empty dict as string
+                                
+                                elif is_categorical:
                                     # Handle categorical feature
                                     unique_values = sorted(input_reference_data[feature].unique())
                                     
