@@ -101,11 +101,32 @@ st.set_page_config(
 )
 
 # App Title with styling
-st.markdown("""
-<div style='background-color:#0066cc;padding:10px;border-radius:10px'>
-<h1 style='color:white;text-align:center;'>Advanced ML Analytics Platform</h1>
-</div>
-""", unsafe_allow_html=True)
+col1, col2 = st.columns([5, 1])
+with col1:
+    st.markdown("""
+    <div style='background-color:#0066cc;padding:10px;border-radius:10px'>
+    <h1 style='color:white;text-align:center;'>Advanced ML Analytics Platform</h1>
+    </div>
+    """, unsafe_allow_html=True)
+with col2:
+    # Add a reset button to clear all session state
+    if st.button("🔄 Reset All", type="primary", help="Reset the entire workflow and clear all session state"):
+        # Store the current reset counter value
+        current_reset_counter = st.session_state.get('reset_counter', 0)
+        
+        # Clear all session state variables
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        
+        # Initialize critical session state variables to ensure clean reset
+        st.session_state.data_loaded = False
+        st.session_state.df = None
+        
+        # Increment reset counter to force file uploader to use a new key
+        st.session_state.reset_counter = current_reset_counter + 1
+        
+        # Force the page to reload completely
+        st.rerun()
 
 # Add description that clearly articulates the problem statement
 st.markdown("""
@@ -160,16 +181,32 @@ example_datasets = {
     "Countries Data (JSON)": "https://restcountries.com/v3.1/all?fields=name,capital,population,area,region"
 }
 
-selected_example = st.sidebar.selectbox("Try an example dataset:", [""] + list(example_datasets.keys()))
+# Generate a unique key for the selectbox based on the reset counter
+example_dataset_key = f"example_dataset_{st.session_state.get('reset_counter', 0)}"
+
+# Force empty selection after reset by setting index=0 (which is the empty string option)
+selected_example = st.sidebar.selectbox("Try an example dataset:", 
+                                       [""] + list(example_datasets.keys()),
+                                       index=0,  # Always default to empty selection
+                                       key=example_dataset_key)
 
 # Add option to use built-in scikit-learn datasets as a fallback
 st.sidebar.markdown("### 📊 Offline Datasets")
-use_builtin = st.sidebar.checkbox("Use built-in scikit-learn datasets (works offline)")
+# Create a unique key for the checkbox
+checkbox_key = f"use_builtin_{st.session_state.get('reset_counter', 0)}"
+
+# Always default to False after reset
+use_builtin = st.sidebar.checkbox("Use built-in scikit-learn datasets (works offline)", 
+                                 value=False,
+                                 key=checkbox_key)
 
 if use_builtin:
+    # Create a unique key for the radio button based on the reset counter
+    radio_key = f"builtin_dataset_{st.session_state.get('reset_counter', 0)}"
     builtin_dataset = st.sidebar.radio(
         "Select built-in dataset:",
-        ["Iris", "Wine", "Breast Cancer", "Diabetes"]
+        ["Iris", "Wine", "Breast Cancer", "Diabetes"],
+        key=radio_key
     )
 
 # Add reference and resources section
@@ -185,25 +222,32 @@ st.markdown("## 📤 Data Acquisition")
 
 # Let user choose file format
 st.markdown("### File Format Selection")
+# Create a unique key for the radio button
+format_key = f"file_format_{st.session_state.get('reset_counter', 0)}"
 file_format = st.radio(
     "Select your data file format:",
     ["CSV", "JSON"],
     horizontal=True,
-    help="Choose the format of your data file"
+    help="Choose the format of your data file",
+    key=format_key
 )
 
 # File uploader based on selected format
+# Using a dynamic key to ensure it resets properly when "Reset All" is clicked
+uploader_key = f"file_uploader_{file_format}_{st.session_state.get('reset_counter', 0)}"
 if file_format == "CSV":
     uploaded_file = st.file_uploader(
         "Upload your CSV dataset", 
         type=["csv"],
-        help="Upload a comma-separated values file (.csv)"
+        help="Upload a comma-separated values file (.csv)",
+        key=uploader_key
     )
 else:
     uploaded_file = st.file_uploader(
         "Upload your JSON dataset", 
         type=["json"],
-        help="Upload a JSON file (.json) - should contain an array of objects or a single object with arrays"
+        help="Upload a JSON file (.json) - should contain an array of objects or a single object with arrays",
+        key=uploader_key
     )
 
 # Load example dataset if selected
@@ -332,7 +376,7 @@ if st.session_state.data_loaded:
     with st.expander("📊 Dataset Overview", expanded=True):
         col1, col2 = st.columns([2, 1])
         with col1:
-            st.dataframe(df.head(10), use_container_width=True)  # Show first 10 rows with full width
+            st.dataframe(df.head(10), width="stretch")  # Show first 10 rows with full width
         with col2:
             st.markdown("### Dataset Profile")
             st.markdown(f"**Rows:** {df.shape[0]}")
@@ -877,9 +921,47 @@ if st.session_state.data_loaded:
             if not target_col:
                 st.info("⬆️ Please select a target column to continue")
             else:
+                # Check if target column has changed
+                if 'target_col' in st.session_state and st.session_state.target_col != target_col:
+                    # Target has changed, determine if type has changed as well (classification vs regression)
+                    old_is_classification = False
+                    new_is_classification = False
+                    
+                    # Check if old target was classification
+                    if 'is_classification' in st.session_state:
+                        old_is_classification = st.session_state.is_classification
+                    
+                    # Check if new target would be classification
+                    if df[target_col].dtype == 'object' or df[target_col].nunique() < 10:
+                        new_is_classification = True
+                    
+                    # If task type changed (classification to regression or vice versa)
+                    if old_is_classification != new_is_classification:
+                        # Reset all ML-related session state because task type changed
+                        keys_to_delete = [
+                            # Data preparation
+                            'X_original', 'y_original', 'X_train_raw', 'X_test_raw', 'y_train', 'y_test',
+                            # Feature engineering
+                            'X_train_processed', 'X_test_processed', 'preprocessing_done', 'preprocessing_summary',
+                            'pca', 'pca_original_features', 'use_pca', 'n_components',
+                            'scaler', 'encoders', 'ordinal_encoder', 'encoded_feature_names',
+                            # Model training
+                            'best_model', 'model_metrics', 'training_done', 'model_training_summary',
+                            'models_trained', 'cv_results', 'feature_importance'
+                        ]
+                        for key in keys_to_delete:
+                            if key in st.session_state:
+                                del st.session_state[key]
+                        
+                        # Show message about task type change
+                        st.warning(f"⚠️ Task type changed from {old_is_classification and 'Classification' or 'Regression'} " +
+                                  f"to {new_is_classification and 'Classification' or 'Regression'}. All progress has been reset.")
+                    else:
+                        # Just show a message that target changed but type is the same
+                        st.info(f"Target changed from {st.session_state.target_col} to {target_col}. Some progress may need to be redone.")
+                
                 # Store target in session state
-                if 'target_col' not in st.session_state:
-                    st.session_state.target_col = target_col
+                st.session_state.target_col = target_col
                 
                 # Analyze target variable
                 if df[target_col].dtype == 'object' or df[target_col].nunique() < 10:
@@ -1052,19 +1134,37 @@ if st.session_state.data_loaded:
                 
                 # Feature Selection Options
                 st.markdown("#### Feature Selection (Optional)")
-                use_pca = st.checkbox("Apply PCA for dimensionality reduction", False)
+                
+                # Store PCA selection in session state for persistence when revisiting
+                if 'use_pca' not in st.session_state:
+                    st.session_state.use_pca = False
+                
+                # Use the session state value as the default for the checkbox
+                use_pca = st.checkbox("Apply PCA for dimensionality reduction", st.session_state.use_pca)
+                
+                # Update session state when value changes
+                st.session_state.use_pca = use_pca
                 
                 if use_pca:
                     if len(st.session_state.num_cols) < 2:
                         st.warning("PCA requires at least 2 numerical features")
+                        st.session_state.use_pca = False
                         use_pca = False
                     else:
+                        # Get default from session state if available
+                        default_n_components = min(3, len(st.session_state.num_cols))
+                        if 'n_components' in st.session_state:
+                            default_n_components = st.session_state.n_components
+                            
                         n_components = st.slider(
                             "Number of PCA components:", 
                             min_value=2, 
                             max_value=min(10, len(st.session_state.num_cols)), 
-                            value=min(3, len(st.session_state.num_cols))
+                            value=default_n_components
                         )
+                        
+                        # Store in session state
+                        st.session_state.n_components = n_components
                 
                 # Apply preprocessing when user clicks this button
                 if st.button("Apply Feature Engineering"):
@@ -1117,11 +1217,35 @@ if st.session_state.data_loaded:
                         # 3. Encode categorical features
                         if encoding_strategy == "Label Encoding":
                             from sklearn.preprocessing import OrdinalEncoder
-                            ordinal_encoder = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
-                            X_train[st.session_state.cat_cols] = ordinal_encoder.fit_transform(X_train[st.session_state.cat_cols].astype(str))
-                            X_test[st.session_state.cat_cols] = ordinal_encoder.transform(X_test[st.session_state.cat_cols].astype(str))
-                            st.session_state.ordinal_encoder = ordinal_encoder
+                            # Create storage for individual encoders
+                            st.session_state.encoders = {}
+                            
+                            # Apply ordinal encoding to each categorical column individually and store the encoder
+                            for col in st.session_state.cat_cols:
+                                ordinal_encoder = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
+                                X_train[col] = ordinal_encoder.fit_transform(X_train[[col]].astype(str))
+                                X_test[col] = ordinal_encoder.transform(X_test[[col]].astype(str))
+                                # Store the encoder for this specific column
+                                st.session_state.encoders[col] = ordinal_encoder
+                            
+                            # Also store the main encoder for backward compatibility
+                            ordinal_encoder_all = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
+                            # Just fit it to the data but don't transform again
+                            ordinal_encoder_all.fit(X_train[st.session_state.cat_cols].astype(str))
+                            st.session_state.ordinal_encoder = ordinal_encoder_all
+                            
                         elif encoding_strategy == "One-Hot Encoding":
+                            from sklearn.preprocessing import OneHotEncoder
+                            # Create storage for individual encoders
+                            st.session_state.encoders = {}
+                            
+                            # We'll store individual one-hot encoders, but still use pandas get_dummies for the actual transform
+                            for col in st.session_state.cat_cols:
+                                onehot_encoder = OneHotEncoder(sparse_output=False, drop='first', handle_unknown='ignore')
+                                onehot_encoder.fit(X_train[[col]].astype(str))
+                                # Store the encoder for future use in prediction
+                                st.session_state.encoders[col] = onehot_encoder
+                            
                             # Get dummies for train set
                             X_train_encoded = pd.get_dummies(X_train, columns=st.session_state.cat_cols, drop_first=True)
                             # Get dummies for test set and ensure same columns as training
@@ -1134,6 +1258,9 @@ if st.session_state.data_loaded:
                             X_test_encoded = X_test_encoded[X_train_encoded.columns]
                             X_train = X_train_encoded
                             X_test = X_test_encoded
+                            
+                            # Store the column names after one-hot encoding for later reference
+                            st.session_state.encoded_feature_names = X_train.columns.tolist()
                         
                         # 4. Apply scaling
                         if scaling_strategy != "No scaling":
@@ -1160,11 +1287,22 @@ if st.session_state.data_loaded:
                         
                         # 5. Apply PCA if selected
                         if use_pca:
-                            num_cols = X_train.select_dtypes(include=np.number).columns
+                            # Get numerical columns, excluding any PCA columns from previous runs
+                            num_cols = [col for col in X_train.select_dtypes(include=np.number).columns 
+                                       if not col.startswith('PCA_')]
+                            
+                            # Remove any previous PCA columns
+                            pca_cols = [col for col in X_train.columns if col.startswith('PCA_')]
+                            if pca_cols:
+                                X_train = X_train.drop(columns=pca_cols)
+                                X_test = X_test.drop(columns=pca_cols)
                             
                             pca = PCA(n_components=n_components)
                             pca_result_train = pca.fit_transform(X_train[num_cols])
                             pca_result_test = pca.transform(X_test[num_cols])
+                            
+                            # Store the original numerical column names (important for predictions later)
+                            st.session_state.pca_original_features = num_cols
                             
                             # Replace numerical features with PCA components
                             for col in num_cols:
@@ -1184,15 +1322,48 @@ if st.session_state.data_loaded:
                                 fig, ax = plt.subplots(figsize=(10, 8))
                                 
                                 if st.session_state.is_classification:
-                                    scatter = ax.scatter(
-                                        pca_result_train[:, 0], 
-                                        pca_result_train[:, 1],
-                                        c=st.session_state.y_train, 
-                                        alpha=0.6,
-                                        cmap='viridis'
-                                    )
-                                    legend = ax.legend(*scatter.legend_elements(), title="Classes")
-                                    ax.add_artist(legend)
+                                    # Handle categorical (string) labels by encoding them to numbers for visualization
+                                    y_train_values = st.session_state.y_train.values
+                                    
+                                    # Check if y_train contains string values that need to be encoded
+                                    if isinstance(y_train_values[0], (str, bool)) or not np.issubdtype(y_train_values.dtype, np.number):
+                                        # Create a label encoder
+                                        from sklearn.preprocessing import LabelEncoder
+                                        le = LabelEncoder()
+                                        color_values = le.fit_transform(y_train_values)
+                                        
+                                        # Create a mapping for the legend
+                                        classes = le.classes_
+                                        color_mapping = {i: class_name for i, class_name in enumerate(classes)}
+                                        
+                                        scatter = ax.scatter(
+                                            pca_result_train[:, 0], 
+                                            pca_result_train[:, 1],
+                                            c=color_values,  # Use encoded values for colors 
+                                            alpha=0.6,
+                                            cmap='viridis'
+                                        )
+                                        
+                                        # Create custom legend with original class names
+                                        from matplotlib.lines import Line2D
+                                        legend_elements = [
+                                            Line2D([0], [0], marker='o', color='w', 
+                                                   markerfacecolor=plt.cm.viridis(i / (len(classes) - 1)), 
+                                                   markersize=10, label=class_name)
+                                            for i, class_name in enumerate(classes)
+                                        ]
+                                        ax.legend(handles=legend_elements, title="Classes")
+                                    else:
+                                        # For numeric labels, use them directly
+                                        scatter = ax.scatter(
+                                            pca_result_train[:, 0], 
+                                            pca_result_train[:, 1],
+                                            c=y_train_values, 
+                                            alpha=0.6,
+                                            cmap='viridis'
+                                        )
+                                        legend = ax.legend(*scatter.legend_elements(), title="Classes")
+                                        ax.add_artist(legend)
                                 else:
                                     scatter = ax.scatter(
                                         pca_result_train[:, 0], 
@@ -1240,6 +1411,14 @@ if st.session_state.data_loaded:
                         ]
                         st.session_state.preprocessing_summary = preprocessing_summary
                         
+                        # If we're re-doing feature engineering, clear any existing model training
+                        model_keys = ['best_model', 'model_metrics', 'training_done', 
+                                     'model_training_summary', 'models_trained', 
+                                     'cv_results', 'feature_importance']
+                        for key in model_keys:
+                            if key in st.session_state:
+                                del st.session_state[key]
+                        
                         st.success("✅ Feature engineering completed successfully!")
                         
                         # Preview processed data
@@ -1254,7 +1433,14 @@ if st.session_state.data_loaded:
                         
                     # Option to reset preprocessing
                     if st.button("Reset Feature Engineering"):
-                        for key in ['X_train_processed', 'X_test_processed', 'preprocessing_done', 'preprocessing_summary']:
+                        # Clear all preprocessing related session state variables
+                        keys_to_delete = [
+                            'X_train_processed', 'X_test_processed', 
+                            'preprocessing_done', 'preprocessing_summary',
+                            'pca', 'pca_original_features', 'use_pca', 'n_components',
+                            'scaler', 'encoders', 'ordinal_encoder', 'encoded_feature_names'
+                        ]
+                        for key in keys_to_delete:
                             if key in st.session_state:
                                 del st.session_state[key]
                         st.rerun()
@@ -1708,7 +1894,14 @@ if st.session_state.data_loaded:
                     
                     # Option to reset model training
                     if st.button("Reset Model Training"):
-                        for key in ['model_results', 'trained_models', 'models_trained', 'best_model_name', 'best_model']:
+                        # More comprehensive list of keys to clear when resetting model training
+                        keys_to_delete = [
+                            # Model training keys
+                            'model_results', 'trained_models', 'models_trained', 'best_model_name', 'best_model',
+                            'model_metrics', 'training_done', 'model_training_summary', 'cv_results', 'feature_importance',
+                            # Do not clear feature engineering or data preparation
+                        ]
+                        for key in keys_to_delete:
                             if key in st.session_state:
                                 del st.session_state[key]
                         st.rerun()
@@ -2763,9 +2956,24 @@ if st.session_state.data_loaded:
                 
                 # Get feature information for input
                 if 'X_train_processed' in st.session_state:
-                    feature_names = st.session_state.X_train_processed.columns.tolist()
-                    feature_count = len(feature_names)
+                    # Check if PCA was applied during feature engineering
+                    pca_applied = 'pca' in st.session_state
                     
+                    if pca_applied:
+                        # If PCA was applied, we need to show original features to the user
+                        st.info("🔍 PCA dimensionality reduction was applied during feature engineering. You'll enter values for the original features, and we'll automatically transform them.")
+                        
+                        # Get original feature names from X_original
+                        feature_names = st.session_state.X_original.columns.tolist()
+                        
+                        # Store reference to original data for statistics
+                        input_reference_data = st.session_state.X_original
+                    else:
+                        # Normal case - use processed features directly
+                        feature_names = st.session_state.X_train_processed.columns.tolist()
+                        input_reference_data = st.session_state.X_train_processed
+                        
+                    feature_count = len(feature_names)
                     st.markdown(f"**Enter values for {feature_count} features:**")
                     
                     # Check if there's a pending example prediction
@@ -2782,21 +2990,68 @@ if st.session_state.data_loaded:
                         
                         user_inputs = {}
                         
-                        # Get reference statistics for smart defaults
-                        X_train = st.session_state.X_train_processed
+                        # We'll use the appropriate data reference for statistics
+                        # (either original data for PCA case or processed data otherwise)
                         
                         for i, feature in enumerate(feature_names):
                             col_idx = i % cols_per_row
                             
                             with cols[col_idx]:
-                                # Get feature statistics for smart defaults and validation
-                                feature_min = float(X_train[feature].min())
-                                feature_max = float(X_train[feature].max())
-                                feature_mean = float(X_train[feature].mean())
-                                feature_std = float(X_train[feature].std())
+                                # Check if this is a categorical or numerical feature
+                                feature_dtype = input_reference_data[feature].dtype
+                                is_categorical = (
+                                    feature_dtype == 'object' or 
+                                    pd.api.types.is_categorical_dtype(feature_dtype) or
+                                    len(input_reference_data[feature].unique()) < 10 and 
+                                    not pd.api.types.is_numeric_dtype(feature_dtype)
+                                )
                                 
-                                # Create input with helpful information
-                                help_text = f"Training data range: [{feature_min:.2f}, {feature_max:.2f}]\nMean: {feature_mean:.2f} ± {feature_std:.2f}"
+                                if is_categorical:
+                                    # Handle categorical feature
+                                    unique_values = sorted(input_reference_data[feature].unique())
+                                    
+                                    # Determine default value based on prediction_example session state
+                                    if 'prediction_example' in st.session_state and len(unique_values) > 0:
+                                        if st.session_state.prediction_example == "average" or st.session_state.prediction_example == "low":
+                                            # Use most common value for average and low examples
+                                            most_common = input_reference_data[feature].value_counts().idxmax()
+                                            default_index = list(unique_values).index(most_common) if most_common in unique_values else 0
+                                        elif st.session_state.prediction_example == "high" and len(unique_values) > 1:
+                                            # For high examples, use the last value (may be more appropriate in some cases)
+                                            default_index = len(unique_values) - 1
+                                        else:
+                                            # Fallback to most common
+                                            most_common = input_reference_data[feature].value_counts().idxmax()
+                                            default_index = list(unique_values).index(most_common) if most_common in unique_values else 0
+                                    else:
+                                        # Default to most common value
+                                        most_common = input_reference_data[feature].value_counts().idxmax()
+                                        default_index = list(unique_values).index(most_common) if most_common in unique_values else 0
+                                    
+                                    # Create dropdown for categorical features
+                                    user_inputs[feature] = st.selectbox(
+                                        f"**{feature}** (Categorical)",
+                                        options=unique_values,
+                                        index=default_index,
+                                        help=f"Categorical feature with {len(unique_values)} unique values"
+                                    )
+                                    
+                                    # Continue to next feature
+                                    continue
+                                
+                                # For numerical features
+                                try:
+                                    feature_min = float(input_reference_data[feature].min())
+                                    feature_max = float(input_reference_data[feature].max())
+                                    feature_mean = float(input_reference_data[feature].mean())
+                                    feature_std = float(input_reference_data[feature].std())
+                                    
+                                    # Create input with helpful information
+                                    help_text = f"Training data range: [{feature_min:.2f}, {feature_max:.2f}]\nMean: {feature_mean:.2f} ± {feature_std:.2f}"
+                                except (ValueError, TypeError):
+                                    # If conversion fails, skip this feature
+                                    st.error(f"Error processing feature: {feature}. Please report this issue.")
+                                    continue
                                 
                                 # Calculate reasonable step size
                                 step_size = feature_std/10 if feature_std > 0 else 0.1
@@ -2809,13 +3064,15 @@ if st.session_state.data_loaded:
                                     if st.session_state.prediction_example == "average":
                                         default_value = feature_mean
                                     elif st.session_state.prediction_example == "high":
-                                        default_value = X_train[feature].quantile(0.9)  # Use 90th percentile
+                                        default_value = input_reference_data[feature].quantile(0.9)  # Use 90th percentile
                                     elif st.session_state.prediction_example == "low":
-                                        default_value = X_train[feature].quantile(0.1)  # Use 10th percentile
+                                        default_value = input_reference_data[feature].quantile(0.1)  # Use 10th percentile
                                     else:
                                         default_value = feature_mean
                                 else:
                                     default_value = feature_mean
+                                    
+                                # Note: We only get here if this is a numerical feature
                                 
                                 # For large scale features, don't use restrictive min/max
                                 if is_large_scale:
@@ -2845,7 +3102,7 @@ if st.session_state.data_loaded:
                         with col2:
                             predict_button = st.form_submit_button(
                                 "🎯 Make Prediction", 
-                                use_container_width=True,
+                                width="stretch",
                                 type="primary"
                             )
                             
@@ -2855,13 +3112,96 @@ if st.session_state.data_loaded:
                             del st.session_state.prediction_example
                         
                         if predict_button:
-                            # Prepare input data
+                            # Prepare input data based on original features
                             input_data = np.array([[user_inputs[feature] for feature in feature_names]])
                             input_df = pd.DataFrame(input_data, columns=feature_names)
                             
+                            # Check if PCA was applied during feature engineering
+                            pca_applied = 'pca' in st.session_state
+                            
+                            if pca_applied:
+                                with st.spinner("Applying PCA transformation to your input..."):
+                                    # Get the stored PCA model
+                                    pca = st.session_state.pca
+                                    
+                                    # We need to transform only the numerical features that were used for PCA
+                                    # Get original numerical features that were used for PCA
+                                    pca_original_features = st.session_state.pca_original_features
+                                    
+                                    # Extract just the numerical columns that were used for PCA
+                                    pca_input = input_df[pca_original_features]
+                                    
+                                    # Transform the input data using PCA
+                                    pca_result = pca.transform(pca_input)
+                                    
+                                    # Create DataFrame with PCA components
+                                    n_components = pca_result.shape[1]
+                                    pca_columns = [f'PCA_{i+1}' for i in range(n_components)]
+                                    transformed_input = pd.DataFrame(pca_result, columns=pca_columns)
+                                    
+                                    # Check if we need to keep any categorical features that weren't part of PCA
+                                    cat_features = [col for col in st.session_state.X_train_processed.columns 
+                                                   if not col.startswith('PCA_')]
+                                    
+                                    # If there are categorical features in the processed data, we need to keep them
+                                    if cat_features:
+                                        # Get categorical features from original data
+                                        cat_input_cols = [col for col in feature_names if col not in pca_original_features]
+                                        
+                                        if cat_input_cols:
+                                            # Get categorical data from user input
+                                            cat_input = input_df[cat_input_cols]
+                                            
+                                            # We need to apply the same preprocessing as during training
+                                            # Check if we have stored encoders for categorical features
+                                            if 'encoders' in st.session_state:
+                                                # Apply encoding for each categorical feature
+                                                for col in cat_input_cols:
+                                                    if col in st.session_state.encoders:
+                                                        encoder = st.session_state.encoders[col]
+                                                        # Get the value from user input
+                                                        value = cat_input[col].iloc[0]
+                                                        
+                                                        # Transform using the encoder
+                                                        try:
+                                                            # Transform the single value - need to reshape for sklearn
+                                                            encoded_val = encoder.transform([[value]])[0]
+                                                            
+                                                            # Get the encoded column names
+                                                            if hasattr(encoder, 'get_feature_names_out'):
+                                                                encoded_cols = encoder.get_feature_names_out([col])
+                                                                
+                                                                # Add each encoded column to transformed input
+                                                                for i, enc_col in enumerate(encoded_cols):
+                                                                    transformed_input[enc_col] = encoded_val[i]
+                                                            else:
+                                                                # Older scikit-learn versions or different encoder
+                                                                transformed_input[col] = encoded_val
+                                                        except Exception as e:
+                                                            st.warning(f"Could not encode {col} properly: {str(e)}")
+                                                            # Use a fallback approach - copy from training data
+                                                            for c in cat_features:
+                                                                transformed_input[c] = st.session_state.X_train_processed[c].iloc[0]
+                                            else:
+                                                # Fallback if no encoders are stored - use the first row from training data
+                                                st.warning("No feature encoders found. Using default values for categorical features.")
+                                                for col in cat_features:
+                                                    transformed_input[col] = st.session_state.X_train_processed[col].iloc[0]
+                                    
+                                    # Show the transformed data
+                                    st.markdown("#### 🔄 PCA Transformation Applied")
+                                    st.markdown("Your input has been transformed using the same PCA components from training:")
+                                    st.dataframe(transformed_input)
+                                    
+                                    # Use the transformed input for prediction
+                                    prediction_input = transformed_input
+                            else:
+                                # Use the original input directly for prediction
+                                prediction_input = input_df
+                            
                             # Make prediction
                             try:
-                                prediction = best_model.predict(input_data)[0]
+                                prediction = best_model.predict(prediction_input)[0]
                                 
                                 # Display results based on task type
                                 st.markdown("---")
@@ -2878,7 +3218,7 @@ if st.session_state.data_loaded:
                                     with col2:
                                         # Try to get prediction probabilities
                                         try:
-                                            probabilities = best_model.predict_proba(input_data)[0]
+                                            probabilities = best_model.predict_proba(prediction_input)[0]
                                             classes = best_model.classes_
                                             
                                             st.markdown("#### Class Probabilities")
@@ -2928,7 +3268,7 @@ if st.session_state.data_loaded:
                                     try:
                                         # For tree-based models, we can estimate uncertainty using individual tree predictions
                                         if hasattr(best_model, 'estimators_'):
-                                            tree_predictions = np.array([tree.predict(input_data)[0] for tree in best_model.estimators_])
+                                            tree_predictions = np.array([tree.predict(prediction_input)[0] for tree in best_model.estimators_])
                                             std_dev = np.std(tree_predictions)
                                             
                                             lower_bound = prediction - 2*std_dev
@@ -3039,7 +3379,7 @@ if st.session_state.data_loaded:
                         )
                         
                         # Submit button for examples
-                        example_submitted = st.form_submit_button("📊 Generate Example Prediction", use_container_width=True)
+                        example_submitted = st.form_submit_button("📊 Generate Example Prediction", width="stretch")
                     
                     # Process example prediction request
                     if example_submitted:
